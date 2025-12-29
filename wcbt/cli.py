@@ -19,9 +19,9 @@ import argparse
 from pathlib import Path
 
 from backup_engine.backup.service import run_backup
+from backup_engine.errors import WcbtError
 from backup_engine.init_profile import init_profile, profile_paths_as_text
 from backup_engine.paths_and_safety import SafetyViolationError
-from backup_engine.errors import WcbtError
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -110,6 +110,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="In plan-only mode, allow overwriting an existing plan file.",
     )
 
+    verify_p = sub.add_parser("verify",
+                              help="Verify a materialized run by hashing archived files.")
+    verify_p.add_argument("--profile", required=True, help="Profile name.")
+    verify_p.add_argument("--run-id", required=True,
+                          help="Run ID to verify (directory name under archives root).")
+    verify_p.add_argument(
+        "--data-root",
+        default=None,
+        help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
+    )
+    verify_p.add_argument(
+        "--force",
+        action="store_true",
+        help="When a profile lock exists and is provably stale (same host, dead PID), break it automatically.",
+    )
+    verify_p.add_argument(
+        "--break-lock",
+        action="store_true",
+        help="Break an existing profile lock even when it is not provably stale. Use with care.",
+    )
+
     return parser
 
 
@@ -152,6 +173,23 @@ def main(argv: list[str] | None = None) -> int:
                 break_lock=bool(args.break_lock),
             )
         except (SafetyViolationError, WcbtError, ValueError) as exc:
+            print(f"ERROR: {exc}")
+            return 2
+        return 0
+
+    if args.command == "verify":
+        from backup_engine.verify import verify_run
+
+        data_root = Path(args.data_root) if args.data_root else None
+        try:
+            verify_run(
+                profile_name=args.profile,
+                run_id=args.run_id,
+                data_root=data_root,
+                force=bool(args.force),
+                break_lock=bool(args.break_lock),
+            )
+        except (WcbtError, ValueError) as exc:
             print(f"ERROR: {exc}")
             return 2
         return 0

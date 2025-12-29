@@ -24,10 +24,11 @@ Safety posture (v1)
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timezone
 from pathlib import Path
 from typing import Iterable
 
-from backup_engine.backup.execute import execute_copy_plan
+from backup_engine.backup.execute import BackupExecutionSummary, execute_copy_plan
 from backup_engine.backup.materialize import materialize_backup_run
 from backup_engine.backup.plan import BackupPlan, attach_scan_issues, build_backup_plan
 from backup_engine.backup.render import render_backup_plan_text
@@ -48,7 +49,6 @@ from backup_engine.manifest_store import (
 from backup_engine.paths_and_safety import resolve_profile_paths, validate_source_path
 from backup_engine.profile_lock import acquire_profile_lock, build_profile_lock_path
 
-from datetime import timezone
 
 class PlanArtifactWriteError(WcbtError):
     """
@@ -189,7 +189,7 @@ def run_backup(
 def _build_executed_run_manifest(
     *,
     base_manifest: BackupRunManifestV2,
-    execution_summary,
+    execution_summary: BackupExecutionSummary,
 ) -> BackupRunManifestV2:
     """
     Create a new run manifest including execution results.

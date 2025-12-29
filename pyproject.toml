@@ -50,3 +50,8 @@ addopts = "-q"
 
 [tool.hatch.build.targets.wheel]
 packages = ["wcbt", "backup_engine"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+]

@@ -20,17 +20,17 @@ third-party dependencies.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import platform
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Mapping
 
 from backup_engine.errors import WcbtError
-from dataclasses import asdict
 
 
 class ProfileLockError(WcbtError):
@@ -100,7 +100,7 @@ def acquire_profile_lock(
     run_id: str | None,
     force: bool,
     break_lock: bool,
-) -> None:
+) -> Iterator[None]:
     """
     Acquire a profile lock for materialize/execute phases.
 

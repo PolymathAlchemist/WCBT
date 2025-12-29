@@ -516,6 +516,11 @@ security = [
     { name = "keyring" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "keyring", marker = "extra == 'security'", specifier = ">=25.0" },
@@ -526,6 +531,9 @@ requires-dist = [
     { name = "zstandard", marker = "extra == 'compression'", specifier = ">=0.22" },
 ]
 provides-extras = ["gui", "security", "compression", "dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "mypy", specifier = ">=1.19.1" }]
 
 [[package]]
 name = "zipp"

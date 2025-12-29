@@ -149,6 +149,57 @@ class BackupRunManifestV2:
         return payload
 
 
+def read_manifest_json(manifest_path: Path) -> dict[str, Any]:
+    """
+    Read a manifest JSON file into a mutable dictionary.
+
+    Parameters
+    ----------
+    manifest_path:
+        Path to manifest.json.
+
+    Returns
+    -------
+    dict[str, Any]
+        Parsed manifest payload.
+
+    Raises
+    ------
+    ManifestIOError
+        If the file cannot be read or parsed.
+    """
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+        payload = json.loads(text)
+    except OSError as exc:
+        raise ManifestIOError(f"Failed to read manifest: {manifest_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ManifestIOError(f"Invalid JSON in manifest: {manifest_path}") from exc
+
+    if not isinstance(payload, dict):
+        raise ManifestIOError(f"Manifest must be a JSON object: {manifest_path}")
+    return payload
+
+
+def write_manifest_json_atomic(manifest_path: Path, payload: Mapping[str, Any]) -> None:
+    """
+    Atomically write a manifest JSON payload.
+
+    Parameters
+    ----------
+    manifest_path:
+        Path to manifest.json.
+    payload:
+        JSON-serializable mapping.
+
+    Notes
+    -----
+    This preserves the atomic write invariant (temp + replace).
+    """
+    write_json_atomic(manifest_path, payload)
+
+
+
 def read_manifest(manifest_path: Path) -> BackupManifest:
     """
     Read and validate a BackupManifest from disk.

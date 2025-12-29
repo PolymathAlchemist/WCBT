@@ -1,19 +1,36 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from backup_engine.backup.service import run_backup
 from backup_engine.clock import FixedClock
-from backup_engine.paths_and_safety import resolve_profile_paths
 from backup_engine.errors import BackupExecutionError
+from backup_engine.paths_and_safety import resolve_profile_paths
 
 
-def _read_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+def _expect_mapping(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise AssertionError("Expected a JSON object (mapping).")
+    return value
+
+
+def _expect_sequence(value: object) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise AssertionError("Expected a JSON array (sequence).")
+    return value
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise AssertionError("Expected manifest payload to be a JSON object")
+    return cast(dict[str, object], payload)
 
 
 def test_execute_copies_files_and_records_results(tmp_path: Path) -> None:
@@ -49,8 +66,14 @@ def test_execute_copies_files_and_records_results(tmp_path: Path) -> None:
     manifest = _read_json(run_root / "manifest.json")
     assert manifest["schema_version"] == "wcbt_run_manifest_v2"
     assert manifest["run_id"] == "20250101_000000Z"
-    assert manifest["execution"]["status"] == "success"
-    assert len(manifest["execution"]["results"]) == len(manifest["operations"])
+    execution = _expect_mapping(manifest["execution"])
+    assert execution["status"] == "success"
+
+    results = _expect_sequence(execution["results"])
+    operations = _expect_sequence(manifest["operations"])
+
+    assert execution["status"] == "success"
+    assert len(results) == len(operations)
 
 
 def test_execute_fails_fast_on_reserved_destination_collision(tmp_path: Path) -> None:
@@ -81,7 +104,8 @@ def test_execute_fails_fast_on_reserved_destination_collision(tmp_path: Path) ->
     assert (run_root / "manifest.json").is_file()
 
     manifest = _read_json(run_root / "manifest.json")
-    assert manifest["execution"]["status"] == "failed"
+    execution = _expect_mapping(manifest["execution"])
+    assert execution["status"] == "failed"
 
     artifact_text = (run_root / "plan.txt").read_text(encoding="utf-8")
     assert "Profile" in artifact_text
