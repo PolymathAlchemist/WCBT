@@ -22,6 +22,7 @@ from backup_engine.backup.service import run_backup
 from backup_engine.errors import WcbtError
 from backup_engine.init_profile import init_profile, profile_paths_as_text
 from backup_engine.paths_and_safety import SafetyViolationError
+from backup_engine.restore.service import run_restore
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -131,6 +132,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Break an existing profile lock even when it is not provably stale. Use with care.",
     )
 
+    restore_p = sub.add_parser("restore", help="Plan a restore run from a run manifest.json.")
+    restore_p.add_argument(
+        "--manifest",
+        required=True,
+        type=Path,
+        help="Path to a run manifest.json (schema wcbt_run_manifest_v2).",
+    )
+    restore_p.add_argument(
+        "--dest",
+        required=True,
+        type=Path,
+        help="Destination root to restore into (user-visible paths live here).",
+    )
+    restore_p.add_argument(
+        "--mode",
+        choices=["add-only", "overwrite"],
+        default="add-only",
+        help="Restore mode: add-only (default) or overwrite existing destination files.",
+    )
+    restore_p.add_argument(
+        "--verify",
+        choices=["none", "size"],
+        default="size",
+        help="Verification level for later milestones; recorded in restore plan now.",
+    )
+    restore_p.add_argument(
+        "--data-root",
+        default=None,
+        help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
+    )
+    restore_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Plan/materialize only. Execution is not implemented in this milestone.",
+    )
+
     return parser
 
 
@@ -190,6 +227,22 @@ def main(argv: list[str] | None = None) -> int:
                 break_lock=bool(args.break_lock),
             )
         except (WcbtError, ValueError) as exc:
+            print(f"ERROR: {exc}")
+            return 2
+        return 0
+
+    if args.command == "restore":
+        data_root = Path(args.data_root) if args.data_root else None
+        try:
+            run_restore(
+                manifest_path=args.manifest,
+                destination_root=args.dest,
+                mode=args.mode,
+                verify=args.verify,
+                dry_run=True,  # restore is plan/materialize only in this milestone
+                data_root=data_root,
+            )
+        except (SafetyViolationError, WcbtError, ValueError) as exc:
             print(f"ERROR: {exc}")
             return 2
         return 0
