@@ -7,15 +7,18 @@ This module coordinates:
 - source scanning
 - deterministic planning
 - deterministic reporting
+- optional run materialization (mkdir + artifacts)
+- optional copy execution (copy-only milestone)
 
-In plan-only mode, WCBT never deletes and does not create run directories unless
-explicitly asked to write a plan artifact.
-
-In materialize mode, WCBT:
-- creates a new archive run directory,
-- writes plan.txt,
-- writes manifest.json,
-but still performs no file copy or deletion.
+Safety posture (v1)
+-------------------
+- Default behavior is plan-only (no filesystem writes, no deletion).
+- Materialize mode creates a run directory and writes plan.txt + manifest.json.
+- Execute mode copies planned files into the run directory:
+  - copy-only (no deletion, no compression),
+  - never overwrites,
+  - fail-fast on invariant violations,
+  - records outcomes deterministically.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from backup_engine.backup.execute import execute_copy_plan
 from backup_engine.backup.materialize import materialize_backup_run
 from backup_engine.backup.plan import BackupPlan, attach_scan_issues, build_backup_plan
 from backup_engine.backup.render import render_backup_plan_text
@@ -34,16 +38,19 @@ from backup_engine.backup.scan import (
     scan_source_tree,
 )
 from backup_engine.clock import Clock, SystemClock
-from backup_engine.errors import BackupMaterializationError, WcbtError
+from backup_engine.errors import BackupExecutionError, WcbtError
+from backup_engine.manifest_store import (
+    BackupRunExecutionV1,
+    BackupRunManifestV2,
+    RunOperationResultV1,
+    write_run_manifest_atomic,
+)
 from backup_engine.paths_and_safety import resolve_profile_paths, validate_source_path
-
+from datetime import timezone
 
 class PlanArtifactWriteError(WcbtError):
     """
     Raised when a plan artifact cannot be written safely.
-
-    This error is used for failures such as attempting to overwrite an existing
-    file without explicit permission, or failing to create required directories.
     """
 
 
@@ -51,15 +58,6 @@ class PlanArtifactWriteError(WcbtError):
 class BackupRunContext:
     """
     Context for a single backup planning run.
-
-    Attributes
-    ----------
-    profile_name:
-        Profile name used to resolve profile paths.
-    source_root:
-        Validated source root directory.
-    archive_root:
-        Planned archive root directory.
     """
 
     profile_name: str
@@ -81,52 +79,15 @@ def run_backup(
     plan_path: Path | None = None,
     overwrite_plan: bool = False,
     clock: Clock | None = None,
+    execute: bool = False,
 ) -> None:
     """
-    Plan (and optionally materialize) a backup for a given profile.
-
-    Parameters
-    ----------
-    profile_name:
-        Profile name used to select the WCBT profile directory.
-    source:
-        Source directory to back up.
-    dry_run:
-        If True, plan and report only. If False, materialize the run
-        (mkdir + plan.txt + manifest.json).
-    data_root:
-        Optional override for WCBT data root (primarily for tests).
-    excluded_directory_names:
-        Optional extra directory names to exclude from traversal.
-    excluded_file_names:
-        Optional extra file names to exclude from traversal.
-    use_default_excludes:
-        If True, use built-in default excludes in addition to user-provided excludes.
-        If False, only the user-provided excludes are used.
-    max_items:
-        Maximum number of planned operations to print in the plan output.
-        Counts always reflect the full plan.
-    write_plan:
-        If True (plan-only), write the rendered plan report to disk.
-    plan_path:
-        Optional override for the plan output file path (plan-only).
-    overwrite_plan:
-        If True, allow overwriting an existing plan file (plan-only).
-    clock:
-        Clock used for deterministic archive identifiers. If not provided,
-        SystemClock is used.
-
-    Raises
-    ------
-    ValueError
-        If max_items is negative.
-    PlanArtifactWriteError
-        If writing the plan artifact is requested but cannot be done safely.
-    BackupMaterializationError
-        If materialization fails.
+    Plan (and optionally materialize and execute) a backup for a given profile.
     """
     if max_items < 0:
         raise ValueError("max_items must be non-negative.")
+    if execute and dry_run:
+        raise ValueError("execute=True is not valid in dry-run mode.")
 
     run_clock = clock or SystemClock()
 
@@ -183,6 +144,69 @@ def run_backup(
     print(f"  Plan file     : {materialized.plan_text_path}")
     print(f"  Manifest file : {materialized.manifest_path}")
 
+    if not execute:
+        return
+
+    summary = execute_copy_plan(
+        plan=plan_with_issues,
+        run_root=materialized.run_root,
+        reserved_paths=(materialized.plan_text_path, materialized.manifest_path),
+    )
+
+    updated_manifest = _build_executed_run_manifest(
+        base_manifest=materialized.manifest,
+        execution_summary=summary,
+    )
+    write_run_manifest_atomic(materialized.manifest_path, updated_manifest)
+
+    print()
+    print("Copy execution complete:")
+    print(f"  Status        : {summary.status}")
+    copied_count = sum(1 for r in summary.results if r.outcome.value == "copied")
+    print(f"  Copied        : {copied_count}")
+    print(f"  Results written: {materialized.manifest_path}")
+
+    if summary.status != "success":
+        raise BackupExecutionError("Copy execution failed. See manifest.json for per-operation results.")
+
+
+def _build_executed_run_manifest(
+    *,
+    base_manifest: BackupRunManifestV2,
+    execution_summary,
+) -> BackupRunManifestV2:
+    """
+    Create a new run manifest including execution results.
+    """
+    results: list[RunOperationResultV1] = []
+    for r in execution_summary.results:
+        results.append(
+            RunOperationResultV1(
+                operation_index=r.operation_index,
+                operation_type=r.operation_type,
+                relative_path=r.relative_path,
+                source_path=r.source_path,
+                destination_path=r.destination_path,
+                outcome=r.outcome.value,
+                message=r.message,
+            )
+        )
+
+    execution = BackupRunExecutionV1(status=execution_summary.status, results=results)
+
+    return BackupRunManifestV2(
+        schema_version=base_manifest.schema_version,
+        run_id=base_manifest.run_id,
+        created_at_utc=base_manifest.created_at_utc,
+        archive_root=base_manifest.archive_root,
+        plan_text_path=base_manifest.plan_text_path,
+        profile_name=base_manifest.profile_name,
+        source_root=base_manifest.source_root,
+        operations=list(base_manifest.operations),
+        scan_issues=list(base_manifest.scan_issues),
+        execution=execution,
+    )
+
 
 def _build_scan_rules(
     *,
@@ -190,9 +214,7 @@ def _build_scan_rules(
     excluded_file_names: Iterable[str] | None,
     use_default_excludes: bool,
 ) -> ScanRules:
-    """
-    Construct ScanRules from defaults and user-provided overrides.
-    """
+    """Construct ScanRules from defaults and user-provided overrides."""
     base_directories = DEFAULT_EXCLUDED_DIRECTORY_NAMES if use_default_excludes else frozenset()
     base_files = DEFAULT_EXCLUDED_FILE_NAMES if use_default_excludes else frozenset()
 
@@ -206,11 +228,9 @@ def _build_scan_rules(
 
 
 def _format_archive_id(clock: Clock) -> str:
-    """
-    Format a deterministic archive identifier using the provided clock.
-    """
     current_time = clock.now()
-    return current_time.astimezone().strftime("%Y%m%d_%H%M%SZ")
+    utc_time = current_time.astimezone(timezone.utc)
+    return utc_time.strftime("%Y%m%d_%H%M%SZ")
 
 
 def _build_backup_report_text(
@@ -219,9 +239,7 @@ def _build_backup_report_text(
     *,
     max_items: int,
 ) -> str:
-    """
-    Build the full human-readable report that is printed and optionally persisted.
-    """
+    """Build the full human-readable report that is printed and optionally persisted."""
     lines: list[str] = []
     lines.append(f"Profile     : {context.profile_name}")
     lines.append(f"Source root : {context.source_root}")
@@ -232,23 +250,7 @@ def _build_backup_report_text(
 
 
 def _write_plan_artifact(*, output_path: Path, content: str, overwrite: bool) -> None:
-    """
-    Write a plan artifact to disk safely.
-
-    Parameters
-    ----------
-    output_path:
-        File path to write.
-    content:
-        Text content to write.
-    overwrite:
-        If True, overwrite an existing file. If False, fail if the file exists.
-
-    Raises
-    ------
-    PlanArtifactWriteError
-        If the artifact cannot be written safely.
-    """
+    """Write a plan artifact to disk safely."""
     try:
         output_path = output_path.expanduser()
         parent = output_path.parent

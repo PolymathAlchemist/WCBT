@@ -10,6 +10,7 @@ Safety posture (backup command)
 - Default: plan-only (no filesystem writes, no deletion).
 - --write-plan: still plan-only, but writes a rendered plan report to disk.
 - --materialize: creates a run directory and writes plan.txt + manifest.json.
+- --execute: materialize and then copy files (copy-only; no deletion).
 """
 
 from __future__ import annotations
@@ -18,48 +19,23 @@ import argparse
 from pathlib import Path
 
 from backup_engine.backup.service import run_backup
-from backup_engine.errors import WcbtError
 from backup_engine.init_profile import init_profile, profile_paths_as_text
 from backup_engine.paths_and_safety import SafetyViolationError
+from backup_engine.errors import WcbtError
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """
-    Build and return the top-level argument parser.
-
-    Returns
-    -------
-    argparse.ArgumentParser
-        Configured parser.
-    """
-    parser = argparse.ArgumentParser(
-        prog="wcbt",
-        description="World Chronicle Backup Tool",
-    )
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="wcbt", description="World Chronicle Backup Tool (WCBT)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    init_p = sub.add_parser(
-        "init",
-        help="Initialize a profile's on-disk folder structure (dry-run safe)",
-    )
-    init_p.add_argument("--profile", required=True, help="Profile name to initialize")
-    init_p.add_argument(
-        "--data-root",
-        default=None,
-        help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
-    )
-    init_p.add_argument(
-        "--print-paths",
-        action="store_true",
-        help="Print resolved paths after initialization",
-    )
+    init_p = sub.add_parser("init-profile", help="Initialize a profile directory structure.")
+    init_p.add_argument("--profile", required=True, help="Profile name.")
+    init_p.add_argument("--data-root", default=None, help="Override WCBT data root (primarily for testing).")
+    init_p.add_argument("--print-paths", action="store_true", help="Print resolved paths after initialization.")
 
-    backup_p = sub.add_parser(
-        "backup",
-        help="Plan or materialize a backup run for a profile (default: plan-only)",
-    )
-    backup_p.add_argument("--profile", required=True, help="Profile name to back up")
-    backup_p.add_argument("--source", required=True, type=Path, help="Source folder to back up")
+    backup_p = sub.add_parser("backup", help="Plan or execute a backup run.")
+    backup_p.add_argument("--profile", required=True, help="Profile name.")
+    backup_p.add_argument("--source", required=True, type=Path, help="Source directory to back up.")
     backup_p.add_argument(
         "--data-root",
         default=None,
@@ -98,53 +74,39 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--materialize",
         action="store_true",
-        help="Create run directory and write plan.txt + manifest.json (still no copy/delete).",
+        help="Create a run directory and write plan.txt + manifest.json (no copy).",
+    )
+    mode.add_argument(
+        "--execute",
+        action="store_true",
+        help="Materialize and then execute copy operations into the run directory (copy-only; no deletion).",
     )
 
-    # Plan artifact output (safe, text-only). Plan-only mode only.
     backup_p.add_argument(
         "--write-plan",
         action="store_true",
-        help="Write the rendered plan report to disk (plan-only mode).",
+        help="In plan-only mode, write the rendered plan report to a plan.txt file.",
     )
     backup_p.add_argument(
         "--plan-path",
         type=Path,
         default=None,
-        help="Optional output path for the plan report (plan-only mode). Defaults to <archive_root>\\plan.txt.",
+        help="In plan-only mode, override the path where plan.txt is written.",
     )
     backup_p.add_argument(
         "--overwrite-plan",
         action="store_true",
-        help="Allow overwriting an existing plan file (plan-only mode).",
+        help="In plan-only mode, allow overwriting an existing plan file.",
     )
-
-    # Placeholders (fine to keep these)
-    sub.add_parser("repair-index", help="Rebuild the SQLite index from manifests (not implemented yet)")
-    sub.add_parser("restore", help="Restore a backup by ID (not implemented yet)")
-    sub.add_parser("sync", help="Replicate backups to configured storage (not implemented yet)")
 
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """
-    CLI entry point.
-
-    Parameters
-    ----------
-    argv:
-        Optional argument vector. If None, argparse uses sys.argv.
-
-    Returns
-    -------
-    int
-        Process exit code.
-    """
-    parser = build_parser()
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "init":
+    if args.command == "init-profile":
         data_root = Path(args.data_root) if args.data_root else None
         paths = init_profile(profile_name=args.profile, data_root=data_root)
         if args.print_paths:
@@ -154,12 +116,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backup":
         data_root = Path(args.data_root) if args.data_root else None
 
-        # Default is plan-only. --dry-run is accepted but redundant.
-        plan_only = not bool(args.materialize)
+        plan_only = not bool(args.materialize or args.execute)
 
         if args.write_plan or args.plan_path is not None:
             if not plan_only:
-                print("ERROR: --write-plan/--plan-path are only valid in plan-only mode (omit --materialize).")
+                print("ERROR: --write-plan/--plan-path are only valid in plan-only mode (omit --materialize/--execute).")
                 return 2
 
         try:
@@ -175,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 write_plan=args.write_plan,
                 plan_path=args.plan_path,
                 overwrite_plan=args.overwrite_plan,
+                execute=bool(args.execute),
             )
         except (SafetyViolationError, WcbtError, ValueError) as exc:
             print(f"ERROR: {exc}")

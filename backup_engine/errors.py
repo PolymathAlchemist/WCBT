@@ -24,3 +24,11 @@ class BackupCommitNotImplementedError(BackupError):
 
 class BackupMaterializationError(BackupError):
     """Raised when a backup run cannot be materialized safely."""
+
+
+class BackupExecutionError(BackupError):
+    """Raised when executing a backup plan fails."""
+
+
+class BackupInvariantViolationError(BackupExecutionError):
+    """Raised when an execution-time invariant is violated."""
