@@ -46,6 +46,8 @@ from backup_engine.manifest_store import (
     write_run_manifest_atomic,
 )
 from backup_engine.paths_and_safety import resolve_profile_paths, validate_source_path
+from backup_engine.profile_lock import acquire_profile_lock, build_profile_lock_path
+
 from datetime import timezone
 
 class PlanArtifactWriteError(WcbtError):
@@ -80,6 +82,8 @@ def run_backup(
     overwrite_plan: bool = False,
     clock: Clock | None = None,
     execute: bool = False,
+    force: bool = False,
+    break_lock: bool = False,
 ) -> None:
     """
     Plan (and optionally materialize and execute) a backup for a given profile.
@@ -128,46 +132,58 @@ def run_backup(
             print(f"Plan written: {output_path}")
         return
 
-    materialized = materialize_backup_run(
-        plan=plan_with_issues,
-        run_root=archive_root,
-        run_id=archive_id,
-        plan_text=report_text,
-        profile_name=profile_name,
-        source_root=source_root,
-        clock=run_clock,
-    )
+    lock_path = build_profile_lock_path(work_root=paths.work_root)
+    with acquire_profile_lock(
+            lock_path=lock_path,
+            profile_name=profile_name,
+            command="backup",
+            run_id=archive_id,
+            force=force,
+            break_lock=break_lock,
+    ):
+        materialized = materialize_backup_run(
+            plan=plan_with_issues,
+            run_root=archive_root,
+            run_id=archive_id,
+            plan_text=report_text,
+            profile_name=profile_name,
+            source_root=source_root,
+            clock=run_clock,
+        )
 
-    print()
-    print("Backup run materialized:")
-    print(f"  Run directory : {materialized.run_root}")
-    print(f"  Plan file     : {materialized.plan_text_path}")
-    print(f"  Manifest file : {materialized.manifest_path}")
+        print()
+        print("Backup run materialized:")
+        print(f"  Run directory : {materialized.run_root}")
+        print(f"  Plan file     : {materialized.plan_text_path}")
+        print(f"  Manifest file : {materialized.manifest_path}")
 
-    if not execute:
-        return
+        if not execute:
+            return
 
-    summary = execute_copy_plan(
-        plan=plan_with_issues,
-        run_root=materialized.run_root,
-        reserved_paths=(materialized.plan_text_path, materialized.manifest_path),
-    )
+        summary = execute_copy_plan(
+            plan=plan_with_issues,
+            run_root=materialized.run_root,
+            reserved_paths=(materialized.plan_text_path,
+                            materialized.manifest_path),
+        )
 
-    updated_manifest = _build_executed_run_manifest(
-        base_manifest=materialized.manifest,
-        execution_summary=summary,
-    )
-    write_run_manifest_atomic(materialized.manifest_path, updated_manifest)
+        updated_manifest = _build_executed_run_manifest(
+            base_manifest=materialized.manifest,
+            execution_summary=summary,
+        )
+        write_run_manifest_atomic(materialized.manifest_path, updated_manifest)
 
-    print()
-    print("Copy execution complete:")
-    print(f"  Status        : {summary.status}")
-    copied_count = sum(1 for r in summary.results if r.outcome.value == "copied")
-    print(f"  Copied        : {copied_count}")
-    print(f"  Results written: {materialized.manifest_path}")
+        print()
+        print("Copy execution complete:")
+        print(f"  Status        : {summary.status}")
+        copied_count = sum(
+            1 for r in summary.results if r.outcome.value == "copied")
+        print(f"  Copied        : {copied_count}")
+        print(f"  Results written: {materialized.manifest_path}")
 
-    if summary.status != "success":
-        raise BackupExecutionError("Copy execution failed. See manifest.json for per-operation results.")
+        if summary.status != "success":
+            raise BackupExecutionError(
+                "Copy execution failed. See manifest.json for per-operation results.")
 
 
 def _build_executed_run_manifest(

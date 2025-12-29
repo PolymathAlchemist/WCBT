@@ -83,6 +83,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     backup_p.add_argument(
+        "--force",
+        action="store_true",
+        help="When a profile lock exists and is provably stale (same host, dead PID), break it automatically.",
+    )
+    backup_p.add_argument(
+        "--break-lock",
+        action="store_true",
+        help="Break an existing profile lock even when it is not provably stale. Use with care.",
+    )
+
+    backup_p.add_argument(
         "--write-plan",
         action="store_true",
         help="In plan-only mode, write the rendered plan report to a plan.txt file.",
@@ -137,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
                 plan_path=args.plan_path,
                 overwrite_plan=args.overwrite_plan,
                 execute=bool(args.execute),
+                force=bool(args.force),
+                break_lock=bool(args.break_lock),
             )
         except (SafetyViolationError, WcbtError, ValueError) as exc:
             print(f"ERROR: {exc}")
