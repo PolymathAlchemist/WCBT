@@ -1,5 +1,5 @@
 """
-Backup orchestration for WCBT (dry-run planning mode).
+Backup orchestration for WCBT.
 
 This module coordinates:
 - profile path resolution (policy + safety gates)
@@ -8,8 +8,14 @@ This module coordinates:
 - deterministic planning
 - deterministic reporting
 
-In dry-run mode, WCBT never deletes. Optionally, it may write a plan artifact
-to disk for later viewing (e.g., GUI consumption).
+In plan-only mode, WCBT never deletes and does not create run directories unless
+explicitly asked to write a plan artifact.
+
+In materialize mode, WCBT:
+- creates a new archive run directory,
+- writes plan.txt,
+- writes manifest.json,
+but still performs no file copy or deletion.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from backup_engine.backup.materialize import materialize_backup_run
 from backup_engine.backup.plan import BackupPlan, attach_scan_issues, build_backup_plan
 from backup_engine.backup.render import render_backup_plan_text
 from backup_engine.backup.scan import (
@@ -27,7 +34,7 @@ from backup_engine.backup.scan import (
     scan_source_tree,
 )
 from backup_engine.clock import Clock, SystemClock
-from backup_engine.errors import BackupCommitNotImplementedError, WcbtError
+from backup_engine.errors import BackupMaterializationError, WcbtError
 from backup_engine.paths_and_safety import resolve_profile_paths, validate_source_path
 
 
@@ -76,7 +83,7 @@ def run_backup(
     clock: Clock | None = None,
 ) -> None:
     """
-    Plan (and in the future, execute) a backup for a given profile.
+    Plan (and optionally materialize) a backup for a given profile.
 
     Parameters
     ----------
@@ -85,8 +92,8 @@ def run_backup(
     source:
         Source directory to back up.
     dry_run:
-        If True, plan and report only. If False, execution is requested.
-        Execution is not implemented in v1.
+        If True, plan and report only. If False, materialize the run
+        (mkdir + plan.txt + manifest.json).
     data_root:
         Optional override for WCBT data root (primarily for tests).
     excluded_directory_names:
@@ -100,30 +107,24 @@ def run_backup(
         Maximum number of planned operations to print in the plan output.
         Counts always reflect the full plan.
     write_plan:
-        If True, write the rendered plan report to disk.
+        If True (plan-only), write the rendered plan report to disk.
     plan_path:
-        Optional override for the plan output file path. If not provided and write_plan
-        is True, the default is <archive_root>/plan.txt.
+        Optional override for the plan output file path (plan-only).
     overwrite_plan:
-        If True, allow overwriting an existing plan file. Default is False.
+        If True, allow overwriting an existing plan file (plan-only).
     clock:
         Clock used for deterministic archive identifiers. If not provided,
         SystemClock is used.
 
     Raises
     ------
-    BackupCommitNotImplementedError
-        If dry_run is False.
     ValueError
         If max_items is negative.
     PlanArtifactWriteError
         If writing the plan artifact is requested but cannot be done safely.
+    BackupMaterializationError
+        If materialization fails.
     """
-    if not dry_run:
-        raise BackupCommitNotImplementedError(
-            "Backup execution is not implemented yet. Use --dry-run."
-        )
-
     if max_items < 0:
         raise ValueError("max_items must be non-negative.")
 
@@ -154,15 +155,33 @@ def run_backup(
     report_text = _build_backup_report_text(context, plan_with_issues, max_items=max_items)
     print(report_text)
 
-    if write_plan or plan_path is not None:
-        output_path = plan_path or (archive_root / "plan.txt")
-        _write_plan_artifact(
-            output_path=output_path,
-            content=report_text,
-            overwrite=overwrite_plan,
-        )
-        print()
-        print(f"Plan written: {output_path}")
+    if dry_run:
+        if write_plan or plan_path is not None:
+            output_path = plan_path or (archive_root / "plan.txt")
+            _write_plan_artifact(
+                output_path=output_path,
+                content=report_text,
+                overwrite=overwrite_plan,
+            )
+            print()
+            print(f"Plan written: {output_path}")
+        return
+
+    materialized = materialize_backup_run(
+        plan=plan_with_issues,
+        run_root=archive_root,
+        run_id=archive_id,
+        plan_text=report_text,
+        profile_name=profile_name,
+        source_root=source_root,
+        clock=run_clock,
+    )
+
+    print()
+    print("Backup run materialized:")
+    print(f"  Run directory : {materialized.run_root}")
+    print(f"  Plan file     : {materialized.plan_text_path}")
+    print(f"  Manifest file : {materialized.manifest_path}")
 
 
 def _build_scan_rules(
@@ -239,7 +258,6 @@ def _write_plan_artifact(*, output_path: Path, content: str, overwrite: bool) ->
             output_path.write_text(content, encoding="utf-8", newline="\n")
             return
 
-        # Safe create: fail if it already exists.
         with output_path.open("x", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
     except FileExistsError as exc:

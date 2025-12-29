@@ -4,6 +4,12 @@ Command-line interface for WCBT.
 Notes
 -----
 The CLI is intentionally thin. It parses arguments and delegates to engine modules.
+
+Safety posture (backup command)
+-------------------------------
+- Default: plan-only (no filesystem writes, no deletion).
+- --write-plan: still plan-only, but writes a rendered plan report to disk.
+- --materialize: creates a run directory and writes plan.txt + manifest.json.
 """
 
 from __future__ import annotations
@@ -18,7 +24,14 @@ from backup_engine.paths_and_safety import SafetyViolationError
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build and return the top-level argument parser."""
+    """
+    Build and return the top-level argument parser.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
     parser = argparse.ArgumentParser(
         prog="wcbt",
         description="World Chronicle Backup Tool",
@@ -43,15 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     backup_p = sub.add_parser(
         "backup",
-        help="Run a backup for a profile (dry-run safe)",
+        help="Plan or materialize a backup run for a profile (default: plan-only)",
     )
     backup_p.add_argument("--profile", required=True, help="Profile name to back up")
     backup_p.add_argument("--source", required=True, type=Path, help="Source folder to back up")
-    backup_p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Plan only; do not write or delete backup data",
-    )
     backup_p.add_argument(
         "--data-root",
         default=None,
@@ -81,22 +89,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of planned operations to list in output (default: 100).",
     )
 
-    # Plan artifact output (safe, text-only).
+    mode = backup_p.add_mutually_exclusive_group(required=False)
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Plan only (no filesystem writes). This is the default behavior.",
+    )
+    mode.add_argument(
+        "--materialize",
+        action="store_true",
+        help="Create run directory and write plan.txt + manifest.json (still no copy/delete).",
+    )
+
+    # Plan artifact output (safe, text-only). Plan-only mode only.
     backup_p.add_argument(
         "--write-plan",
         action="store_true",
-        help="Write the rendered plan report to disk.",
+        help="Write the rendered plan report to disk (plan-only mode).",
     )
     backup_p.add_argument(
         "--plan-path",
         type=Path,
         default=None,
-        help="Optional output path for the plan report. Defaults to <archive_root>\\plan.txt.",
+        help="Optional output path for the plan report (plan-only mode). Defaults to <archive_root>\\plan.txt.",
     )
     backup_p.add_argument(
         "--overwrite-plan",
         action="store_true",
-        help="Allow overwriting an existing plan file.",
+        help="Allow overwriting an existing plan file (plan-only mode).",
     )
 
     # Placeholders (fine to keep these)
@@ -108,7 +128,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point."""
+    """
+    CLI entry point.
+
+    Parameters
+    ----------
+    argv:
+        Optional argument vector. If None, argparse uses sys.argv.
+
+    Returns
+    -------
+    int
+        Process exit code.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -121,11 +153,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "backup":
         data_root = Path(args.data_root) if args.data_root else None
+
+        # Default is plan-only. --dry-run is accepted but redundant.
+        plan_only = not bool(args.materialize)
+
+        if args.write_plan or args.plan_path is not None:
+            if not plan_only:
+                print("ERROR: --write-plan/--plan-path are only valid in plan-only mode (omit --materialize).")
+                return 2
+
         try:
             run_backup(
                 profile_name=args.profile,
                 source=args.source,
-                dry_run=args.dry_run,
+                dry_run=plan_only,
                 data_root=data_root,
                 excluded_directory_names=args.exclude_dir,
                 excluded_file_names=args.exclude_file,
