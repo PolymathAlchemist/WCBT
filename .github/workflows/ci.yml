@@ -12,14 +12,16 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - uses: astral-sh/setup-uv@v3
 
       - name: Sync
         run: uv sync --dev
 
       - name: Audit
-        run: uv audit
+        run: uv run pip-audit
 
       - name: Ruff
         run: uv run ruff check .
