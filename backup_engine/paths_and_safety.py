@@ -76,9 +76,7 @@ def default_data_root() -> Path:
     if roaming:
         return Path(roaming) / "wcbt"
 
-    raise SafetyViolationError(
-        "Neither LOCALAPPDATA nor APPDATA environment variables are set."
-    )
+    raise SafetyViolationError("Neither LOCALAPPDATA nor APPDATA environment variables are set.")
 
 
 def resolve_profile_paths(profile_name: str, data_root: Path | None = None) -> ProfilePaths:

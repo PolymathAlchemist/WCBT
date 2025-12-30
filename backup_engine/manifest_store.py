@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, ClassVar, Iterator, Mapping, Protocol
 
 from .data_models import BackupManifest
 from .exceptions import ManifestIOError, ManifestValidationError
@@ -29,89 +29,183 @@ class ManifestWriteOptions:
 
     pretty: bool = True
     indent: int = 2
-    sort_keys: bool = False
+    sort_keys: bool = True
     ensure_ascii: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class BackupRunManifestV1:
-    """
-    Minimal canonical manifest for a single backup run.
+class SupportsToDict(Protocol):
+    """Protocol for manifest models that can be serialized to JSON."""
 
-    This manifest is intended for the milestone where the run is materialized
-    (directory created, plan and manifest written) without copying or deleting
-    any files yet.
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the manifest to a JSON-serializable dictionary."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class RunOperationResultV1:
+    """
+    Per-operation execution result (v1).
 
     Attributes
     ----------
-    schema_version:
-        Schema identifier for forward compatibility.
-    run_id:
-        Stable ID for the run directory and manifest association.
-    created_at_utc:
-        ISO-8601 timestamp in UTC, produced by an injectable clock.
-    archive_root:
-        Absolute archive run directory for this run.
-    plan_text_path:
-        Absolute path to the plan text file for this run.
-    operations:
-        Planned operations in deterministic order, serialized into a JSON-safe structure.
-    scan_issues:
-        Non-fatal scan issues captured during scanning, serialized into a JSON-safe structure.
+    operation_index:
+        Index into the original deterministic plan operations list.
+    operation_type:
+        Planned operation type string.
+    relative_path:
+        Relative file path string.
+    source_path:
+        Absolute source path string.
+    destination_path:
+        Absolute destination path string.
+    outcome:
+        Outcome string (stable external contract).
+    message:
+        Human-readable detail for the outcome.
     """
+
+    operation_index: int
+    operation_type: str
+    relative_path: str
+    source_path: str
+    destination_path: str
+    outcome: str
+    message: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to a JSON-serializable payload."""
+        return {
+            "operation_index": self.operation_index,
+            "operation_type": self.operation_type,
+            "relative_path": self.relative_path,
+            "source_path": self.source_path,
+            "destination_path": self.destination_path,
+            "outcome": self.outcome,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BackupRunExecutionV1:
+    """
+    Execution results container for a backup run.
+
+    Attributes
+    ----------
+    status:
+        Overall status string: "success" or "failed".
+    results:
+        Per-operation results in deterministic order (same order as the plan).
+    """
+
+    status: str
+    results: list[RunOperationResultV1]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to a JSON-serializable payload."""
+        return {
+            "status": self.status,
+            "results": [r.to_dict() for r in self.results],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BackupRunManifestV2:
+    """
+    Canonical manifest for a single backup run (schema v2).
+
+    This manifest is written during materialization (execution=None) and may be
+    updated after execution to include deterministic outcomes.
+    """
+
+    SCHEMA_VERSION: ClassVar[str] = "wcbt_run_manifest_v2"
 
     schema_version: str
     run_id: str
     created_at_utc: str
     archive_root: str
     plan_text_path: str
-    operations: list[Mapping[str, Any]]
-    scan_issues: list[Mapping[str, Any]]
+    profile_name: str
+    source_root: str
+    operations: list[Mapping[str, Any]] = field(default_factory=list)
+    scan_issues: list[Mapping[str, Any]] = field(default_factory=list)
+    execution: BackupRunExecutionV1 | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """
-        Convert the manifest to a JSON-serializable dictionary.
-
-        Returns
-        -------
-        dict[str, Any]
-            JSON-ready payload.
-        """
-        return {
+        """Convert the manifest to a JSON-serializable dictionary."""
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "run_id": self.run_id,
             "created_at_utc": self.created_at_utc,
             "archive_root": self.archive_root,
             "plan_text_path": self.plan_text_path,
+            "profile_name": self.profile_name,
+            "source_root": self.source_root,
             "operations": list(self.operations),
             "scan_issues": list(self.scan_issues),
         }
+        if self.execution is not None:
+            payload["execution"] = self.execution.to_dict()
+        return payload
 
 
-def read_manifest(manifest_path: Path) -> BackupManifest:
+def read_manifest_json(manifest_path: Path) -> dict[str, Any]:
     """
-    Read and validate a manifest from disk.
+    Read a manifest JSON file into a mutable dictionary.
 
     Parameters
     ----------
-    manifest_path
-        Path to a JSON manifest file.
+    manifest_path:
+        Path to manifest.json.
 
     Returns
     -------
-    BackupManifest
-        Parsed and validated manifest.
+    dict[str, Any]
+        Parsed manifest payload.
 
     Raises
     ------
     ManifestIOError
-        If the file cannot be read or decoded.
-    ManifestValidationError
-        If the file parses but fails schema validation.
+        If the file cannot be read or parsed.
     """
     try:
-        raw_text = manifest_path.read_text(encoding="utf-8")
-        payload = json.loads(raw_text)
+        text = manifest_path.read_text(encoding="utf-8")
+        payload = json.loads(text)
+    except OSError as exc:
+        raise ManifestIOError(f"Failed to read manifest: {manifest_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ManifestIOError(f"Invalid JSON in manifest: {manifest_path}") from exc
+
+    if not isinstance(payload, dict):
+        raise ManifestIOError(f"Manifest must be a JSON object: {manifest_path}")
+    return payload
+
+
+def write_manifest_json_atomic(manifest_path: Path, payload: Mapping[str, Any]) -> None:
+    """
+    Atomically write a manifest JSON payload.
+
+    Parameters
+    ----------
+    manifest_path:
+        Path to manifest.json.
+    payload:
+        JSON-serializable mapping.
+
+    Notes
+    -----
+    This preserves the atomic write invariant (temp + replace).
+    """
+    write_json_atomic(manifest_path, payload)
+
+
+def read_manifest(manifest_path: Path) -> BackupManifest:
+    """
+    Read and validate a BackupManifest from disk.
+    """
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+        payload = json.loads(text)
     except OSError as exc:
         raise ManifestIOError(f"Failed to read manifest: {manifest_path}") from exc
     except json.JSONDecodeError as exc:
@@ -130,41 +224,42 @@ def write_json_atomic(
     options: ManifestWriteOptions | None = None,
 ) -> None:
     """
-    Atomically write a JSON payload to disk.
-
-    The file is written to a temporary path within the same directory, then
-    replaced using os.replace to guarantee atomicity on Windows NTFS.
-
-    Parameters
-    ----------
-    json_path
-        Target JSON path.
-    payload
-        JSON-serializable mapping.
-    options
-        Serialization options.
-
-    Raises
-    ------
-    ManifestIOError
-        If the JSON cannot be written.
+    Write JSON atomically to disk.
     """
-    options = options or ManifestWriteOptions()
+    opts = options or ManifestWriteOptions()
+    json_path = json_path.expanduser()
+    directory = json_path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+
+    temp_path = json_path.with_suffix(json_path.suffix + ".tmp")
 
     try:
-        json_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-        json_text = json.dumps(
-            dict(payload),
-            indent=options.indent if options.pretty else None,
-            separators=None if options.pretty else (",", ":"),
-            sort_keys=options.sort_keys,
-            ensure_ascii=options.ensure_ascii,
-        )
-        tmp_path.write_text(json_text, encoding="utf-8", newline="\n")
-        os.replace(tmp_path, json_path)
+        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            if opts.pretty:
+                json.dump(
+                    payload,
+                    handle,
+                    indent=opts.indent,
+                    sort_keys=opts.sort_keys,
+                    ensure_ascii=opts.ensure_ascii,
+                )
+                handle.write("\n")
+            else:
+                json.dump(
+                    payload,
+                    handle,
+                    separators=(",", ":"),
+                    sort_keys=opts.sort_keys,
+                    ensure_ascii=opts.ensure_ascii,
+                )
+        os.replace(temp_path, json_path)
     except OSError as exc:
-        raise ManifestIOError(f"Failed to write JSON: {json_path}") from exc
+        try:
+            if temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise ManifestIOError(f"Failed to write JSON: {json_path} ({exc!s})") from exc
 
 
 def write_manifest_atomic(
@@ -173,90 +268,30 @@ def write_manifest_atomic(
     *,
     options: ManifestWriteOptions | None = None,
 ) -> None:
-    """
-    Atomically write a manifest to disk.
-
-    Parameters
-    ----------
-    manifest_path
-        Target manifest path.
-    manifest
-        Manifest object to serialize.
-    options
-        Serialization options.
-
-    Raises
-    ------
-    ManifestIOError
-        If the manifest cannot be written.
-    """
+    """Atomically write a validated BackupManifest to disk."""
+    manifest.validate()
     write_json_atomic(manifest_path, manifest.to_dict(), options=options)
 
 
 def write_run_manifest_atomic(
     manifest_path: Path,
-    manifest: BackupRunManifestV1,
+    manifest: SupportsToDict,
     *,
     options: ManifestWriteOptions | None = None,
 ) -> None:
-    """
-    Atomically write a BackupRunManifestV1 to disk.
-
-    Parameters
-    ----------
-    manifest_path
-        Target manifest path.
-    manifest
-        Backup run manifest object to serialize.
-    options
-        Serialization options.
-
-    Raises
-    ------
-    ManifestIOError
-        If the manifest cannot be written.
-    """
+    """Atomically write a run manifest to disk."""
     write_json_atomic(manifest_path, manifest.to_dict(), options=options)
 
 
 def iter_manifest_paths(manifest_root: Path) -> Iterator[Path]:
-    """
-    Yield manifest file paths under a directory tree.
-
-    Parameters
-    ----------
-    manifest_root
-        Root directory containing manifest files.
-
-    Yields
-    ------
-    pathlib.Path
-        Paths ending in .json.
-
-    Notes
-    -----
-    This is intentionally dumb and deterministic: it yields in sorted path order.
-    """
-    if not manifest_root.exists():
-        return iter(())
-    paths = sorted(p for p in manifest_root.rglob("*.json") if p.is_file())
-    return iter(paths)
+    """Yield manifest file paths under a directory tree."""
+    for path in manifest_root.rglob("*.json"):
+        if path.is_file():
+            yield path
 
 
 def load_all_manifests(manifest_root: Path) -> list[BackupManifest]:
-    """
-    Load all manifests under a root directory.
-
-    Parameters
-    ----------
-    manifest_root
-        Root directory to scan.
-
-    Returns
-    -------
-    list[BackupManifest]
-        Valid manifests.
-    """
+    """Load all backup manifests under a manifest root."""
     manifests: list[BackupManifest] = []
     for path in iter_manifest_paths(manifest_root):
         manifests.append(read_manifest(path))

@@ -1,0 +1,99 @@
+diff --git a/wcbt/cli.py b/wcbt/cli.py
+index 0000000..0000000 100644
+--- a/wcbt/cli.py
++++ b/wcbt/cli.py
+@@ -18,11 +18,12 @@ from __future__ import annotations
+ import argparse
+ from pathlib import Path
+ 
+ from backup_engine.backup.service import run_backup
+ from backup_engine.errors import WcbtError
+ from backup_engine.init_profile import init_profile, profile_paths_as_text
+ from backup_engine.paths_and_safety import SafetyViolationError
++from backup_engine.restore.service import run_restore
+ 
+ 
+ def _build_parser() -> argparse.ArgumentParser:
+@@ -96,6 +97,37 @@ def _build_parser() -> argparse.ArgumentParser:
+         help="In plan-only mode, write the rendered plan report to a plan.txt file.",
+     )
+     backup_p.add_argument(
+         "--plan-path",
+         type=Path,
+         default=None,
+         help="In plan-only mode, override the path where plan.txt is written.",
+     )
+     backup_p.add_argument(
+         "--overwrite-plan",
+         action="store_true",
+         help="In plan-only mode, allow overwriting an existing plan file.",
+     )
+ 
++    restore_p = sub.add_parser("restore", help="Plan a restore run from a run manifest.json.")
++    restore_p.add_argument(
++        "--manifest",
++        required=True,
++        type=Path,
++        help="Path to a run manifest.json (schema wcbt_run_manifest_v2).",
++    )
++    restore_p.add_argument(
++        "--dest",
++        required=True,
++        type=Path,
++        help="Destination root to restore into (user-visible paths live here).",
++    )
++    restore_p.add_argument(
++        "--mode",
++        choices=["add-only", "overwrite"],
++        default="add-only",
++        help="Restore mode: add-only (default) or overwrite existing destination files.",
++    )
++    restore_p.add_argument(
++        "--verify",
++        choices=["none", "size"],
++        default="size",
++        help="Verification level for later milestones; recorded in restore plan now.",
++    )
++    restore_p.add_argument(
++        "--data-root",
++        default=None,
++        help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
++    )
++    restore_p.add_argument(
++        "--dry-run",
++        action="store_true",
++        help="Plan/materialize only. Execution is not implemented in this milestone.",
++    )
++
+     verify_p = sub.add_parser("verify",
+                               help="Verify a materialized run by hashing archived files.")
+     verify_p.add_argument("--profile", required=True, help="Profile name.")
+     verify_p.add_argument("--run-id", required=True,
+                           help="Run ID to verify (directory name under archives root).")
+@@ -164,6 +196,29 @@ def main(argv: list[str] | None = None) -> int:
+             print(f"ERROR: {exc}")
+             return 2
+         return 0
+ 
++    if args.command == "restore":
++        data_root = Path(args.data_root) if args.data_root else None
++        try:
++            run_restore(
++                manifest_path=args.manifest,
++                destination_root=args.dest,
++                mode=args.mode,
++                verify=args.verify,
++                # In this milestone, restore is always plan/materialize. --dry-run is accepted for symmetry.
++                dry_run=True,
++                data_root=data_root,
++            )
++        except (SafetyViolationError, WcbtError, ValueError) as exc:
++            print(f"ERROR: {exc}")
++            return 2
++        return 0
++
+     if args.command == "verify":
+         from backup_engine.verify import verify_run
+ 
+         data_root = Path(args.data_root) if args.data_root else None
+         try:

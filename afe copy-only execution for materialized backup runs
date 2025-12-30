@@ -1,0 +1,1509 @@
+warning: in the working copy of 'backup_engine/manifest_store.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/backup_engine/backup/execute.py b/backup_engine/backup/execute.py[m
+[1mindex e69de29..47eff71 100644[m
+[1m--- a/backup_engine/backup/execute.py[m
+[1m+++ b/backup_engine/backup/execute.py[m
+[36m@@ -0,0 +1,309 @@[m
+[32m+[m[32m"""[m
+[32m+[m[32mCopy execution for WCBT backup runs.[m
+[32m+[m
+[32m+[m[32mThis module performs the first "real" backup execution phase: copying planned[m
+[32m+[m[32mfiles into a materialized run directory.[m
+[32m+[m
+[32m+[m[32mSafety posture[m
+[32m+[m[32m--------------[m
+[32m+[m[32m- Executes only COPY_FILE_TO_ARCHIVE operations.[m
+[32m+[m[32m- Never deletes anything.[m
+[32m+[m[32m- Never overwrites existing destination files.[m
+[32m+[m[32m- Fails fast on invariant violations and records outcomes deterministically.[m
+[32m+[m[32m- Requires the run directory and its artifacts (plan.txt, manifest.json) to[m
+[32m+[m[32m  already exist before any copy occurs.[m
+[32m+[m
+[32m+[m[32mDesign notes[m
+[32m+[m[32m------------[m
+[32m+[m[32m- This module performs filesystem writes (copy + mkdir), but only within the[m
+[32m+[m[32m  already-materialized run directory.[m
+[32m+[m[32m- It does not depend on the CLI.[m
+[32m+[m[32m- Deterministic behavior: outcomes preserve plan order exactly.[m
+[32m+[m[32m"""[m
+[32m+[m
+[32m+[m[32mfrom __future__ import annotations[m
+[32m+[m
+[32m+[m[32mimport shutil[m
+[32m+[m[32mfrom dataclasses import dataclass[m
+[32m+[m[32mfrom enum import Enum[m
+[32m+[m[32mfrom pathlib import Path[m
+[32m+[m[32mfrom typing import Iterable[m
+[32m+[m
+[32m+[m[32mfrom backup_engine.backup.plan import BackupPlan, PlannedOperation, PlannedOperationType[m
+[32m+[m[32mfrom backup_engine.errors import BackupExecutionError, BackupInvariantViolationError[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass OperationOutcome(str, Enum):[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Outcome values for execution results.[m
+[32m+[m
+[32m+[m[32m    These values are persisted into the run manifest. Treat them as a stable[m
+[32m+[m[32m    external contract.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    COPIED = "copied"[m
+[32m+[m[32m    SKIPPED_NON_COPY_OPERATION = "skipped_non_copy_operation"[m
+[32m+[m[32m    FAILED_INVARIANT = "failed_invariant"[m
+[32m+[m[32m    FAILED_IO = "failed_io"[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True, slots=True)[m
+[32m+[m[32mclass OperationExecutionResult:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Result of executing (or intentionally skipping) a single planned operation.[m
+[32m+[m
+[32m+[m[32m    Attributes[m
+[32m+[m[32m    ----------[m
+[32m+[m[32m    operation_index:[m
+[32m+[m[32m        Index of the operation in plan.operations.[m
+[32m+[m[32m    operation_type:[m
+[32m+[m[32m        Operation type string value.[m
+[32m+[m[32m    relative_path:[m
+[32m+[m[32m        Relative path for the operation (string form).[m
+[32m+[m[32m    source_path:[m
+[32m+[m[32m        Absolute source path (string form).[m
+[32m+[m[32m    destination_path:[m
+[32m+[m[32m        Absolute destination path (string form).[m
+[32m+[m[32m    outcome:[m
+[32m+[m[32m        Outcome of the operation.[m
+[32m+[m[32m    message:[m
+[32m+[m[32m        Human-readable detail for the outcome (safe to print/log).[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    operation_index: int[m
+[32m+[m[32m    operation_type: str[m
+[32m+[m[32m    relative_path: str[m
+[32m+[m[32m    source_path: str[m
+[32m+[m[32m    destination_path: str[m
+[32m+[m[32m    outcome: OperationOutcome[m
+[32m+[m[32m    message: str[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True, slots=True)[m
+[32m+[m[32mclass BackupExecutionSummary:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Summary of executing a backup plan.[m
+[32m+[m
+[32m+[m[32m    Attributes[m
+[32m+[m[32m    ----------[m
+[32m+[m[32m    status:[m
+[32m+[m[32m        Overall status string: "success" or "failed".[m
+[32m+[m[32m    results:[m
+[32m+[m[32m        Per-operation results in deterministic order (same as plan.operations).[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    status: str[m
+[32m+[m[32m    results: list[OperationExecutionResult][m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef execute_copy_plan([m
+[32m+[m[32m    *,[m
+[32m+[m[32m    plan: BackupPlan,[m
+[32m+[m[32m    run_root: Path,[m
+[32m+[m[32m    reserved_paths: Iterable[Path],[m
+[32m+[m[32m) -> BackupExecutionSummary:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Execute copy operations for a materialized backup run.[m
+[32m+[m
+[32m+[m[32m    Parameters[m
+[32m+[m[32m    ----------[m
+[32m+[m[32m    plan:[m
+[32m+[m[32m        Backup plan to execute.[m
+[32m+[m[32m    run_root:[m
+[32m+[m[32m        Materialized run directory (plan destinations are expected to be under this root).[m
+[32m+[m[32m    reserved_paths:[m
+[32m+[m[32m        Paths that must never be overwritten (e.g., plan.txt, manifest.json).[m
+[32m+[m
+[32m+[m[32m    Returns[m
+[32m+[m[32m    -------[m
+[32m+[m[32m    BackupExecutionSummary[m
+[32m+[m[32m        Execution results in deterministic order.[m
+[32m+[m
+[32m+[m[32m    Raises[m
+[32m+[m[32m    ------[m
+[32m+[m[32m    BackupInvariantViolationError[m
+[32m+[m[32m        If required artifacts are missing or if a planned destination is unsafe.[m
+[32m+[m[32m    BackupExecutionError[m
+[32m+[m[32m        If an unrecoverable execution failure occurs.[m
+[32m+[m[32m    """[m
+[32m+[m[32m    _assert_materialized_run_invariants(run_root=run_root)[m
+[32m+[m
+[32m+[m[32m    reserved_set = {p.resolve() for p in reserved_paths}[m
+[32m+[m[32m    run_root_resolved = run_root.resolve()[m
+[32m+[m
+[32m+[m[32m    results: list[OperationExecutionResult] = [][m
+[32m+[m
+[32m+[m[32m    for index, operation in enumerate(plan.operations):[m
+[32m+[m[32m        result = _execute_single_operation([m
+[32m+[m[32m            operation_index=index,[m
+[32m+[m[32m            operation=operation,[m
+[32m+[m[32m            run_root=run_root_resolved,[m
+[32m+[m[32m            reserved_paths=reserved_set,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        results.append(result)[m
+[32m+[m
+[32m+[m[32m        if result.outcome in {OperationOutcome.FAILED_INVARIANT, OperationOutcome.FAILED_IO}:[m
+[32m+[m[32m            # Fail fast: stop on first failure, but return deterministic partial results.[m
+[32m+[m[32m            return BackupExecutionSummary(status="failed", results=results)[m
+[32m+[m
+[32m+[m[32m    return BackupExecutionSummary(status="success", results=results)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _assert_materialized_run_invariants(*, run_root: Path) -> None:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Ensure the run directory and required artifacts exist before copying.[m
+[32m+[m
+[32m+[m[32m    Raises[m
+[32m+[m[32m    ------[m
+[32m+[m[32m    BackupInvariantViolationError[m
+[32m+[m[32m        If invariants are not satisfied.[m
+[32m+[m[32m    """[m
+[32m+[m[32m    if not run_root.exists():[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Run directory does not exist: {run_root}")[m
+[32m+[m[32m    if not run_root.is_dir():[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Run root is not a directory: {run_root}")[m
+[32m+[m
+[32m+[m[32m    plan_path = run_root / "plan.txt"[m
+[32m+[m[32m    manifest_path = run_root / "manifest.json"[m
+[32m+[m
+[32m+[m[32m    if not plan_path.is_file():[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Missing required artifact: {plan_path}")[m
+[32m+[m[32m    if not manifest_path.is_file():[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Missing required artifact: {manifest_path}")[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _execute_single_operation([m
+[32m+[m[32m    *,[m
+[32m+[m[32m    operation_index: int,[m
+[32m+[m[32m    operation: PlannedOperation,[m
+[32m+[m[32m    run_root: Path,[m
+[32m+[m[32m    reserved_paths: set[Path],[m
+[32m+[m[32m) -> OperationExecutionResult:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Execute a single planned operation.[m
+[32m+[m
+[32m+[m[32m    Notes[m
+[32m+[m[32m    -----[m
+[32m+[m[32m    - Non-copy operations are skipped (recorded explicitly).[m
+[32m+[m[32m    - Copy operations are executed with strict safety checks.[m
+[32m+[m[32m    """[m
+[32m+[m[32m    if operation.operation_type is not PlannedOperationType.COPY_FILE_TO_ARCHIVE:[m
+[32m+[m[32m        return OperationExecutionResult([m
+[32m+[m[32m            operation_index=operation_index,[m
+[32m+[m[32m            operation_type=operation.operation_type.value,[m
+[32m+[m[32m            relative_path=str(operation.relative_path),[m
+[32m+[m[32m            source_path=str(operation.source_path),[m
+[32m+[m[32m            destination_path=str(operation.destination_path),[m
+[32m+[m[32m            outcome=OperationOutcome.SKIPPED_NON_COPY_OPERATION,[m
+[32m+[m[32m            message="Operation type is not executable in copy-only milestone.",[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    destination_path = Path(operation.destination_path).resolve()[m
+[32m+[m[32m    source_path = Path(operation.source_path).resolve()[m
+[32m+[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        _assert_destination_is_safe([m
+[32m+[m[32m            run_root=run_root,[m
+[32m+[m[32m            destination_path=destination_path,[m
+[32m+[m[32m            reserved_paths=reserved_paths,[m
+[32m+[m[32m        )[m
+[32m+[m[32m        _copy_file_strict(source_path=source_path, destination_path=destination_path)[m
+[32m+[m[32m        return OperationExecutionResult([m
+[32m+[m[32m            operation_index=operation_index,[m
+[32m+[m[32m            operation_type=operation.operation_type.value,[m
+[32m+[m[32m            relative_path=str(operation.relative_path),[m
+[32m+[m[32m            source_path=str(source_path),[m
+[32m+[m[32m            destination_path=str(destination_path),[m
+[32m+[m[32m            outcome=OperationOutcome.COPIED,[m
+[32m+[m[32m            message="Copied successfully.",[m
+[32m+[m[32m        )[m
+[32m+[m[32m    except BackupInvariantViolationError as exc:[m
+[32m+[m[32m        return OperationExecutionResult([m
+[32m+[m[32m            operation_index=operation_index,[m
+[32m+[m[32m            operation_type=operation.operation_type.value,[m
+[32m+[m[32m            relative_path=str(operation.relative_path),[m
+[32m+[m[32m            source_path=str(source_path),[m
+[32m+[m[32m            destination_path=str(destination_path),[m
+[32m+[m[32m            outcome=OperationOutcome.FAILED_INVARIANT,[m
+[32m+[m[32m            message=str(exc),[m
+[32m+[m[32m        )[m
+[32m+[m[32m    except OSError as exc:[m
+[32m+[m[32m        return OperationExecutionResult([m
+[32m+[m[32m            operation_index=operation_index,[m
+[32m+[m[32m            operation_type=operation.operation_type.value,[m
+[32m+[m[32m            relative_path=str(operation.relative_path),[m
+[32m+[m[32m            source_path=str(source_path),[m
+[32m+[m[32m            destination_path=str(destination_path),[m
+[32m+[m[32m            outcome=OperationOutcome.FAILED_IO,[m
+[32m+[m[32m            message=f"Copy failed: {exc!s}",[m
+[32m+[m[32m        )[m
+[32m+[m[32m    except BackupExecutionError as exc:[m
+[32m+[m[32m        return OperationExecutionResult([m
+[32m+[m[32m            operation_index=operation_index,[m
+[32m+[m[32m            operation_type=operation.operation_type.value,[m
+[32m+[m[32m            relative_path=str(operation.relative_path),[m
+[32m+[m[32m            source_path=str(source_path),[m
+[32m+[m[32m            destination_path=str(destination_path),[m
+[32m+[m[32m            outcome=OperationOutcome.FAILED_INVARIANT,[m
+[32m+[m[32m            message=str(exc),[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _assert_destination_is_safe([m
+[32m+[m[32m    *,[m
+[32m+[m[32m    run_root: Path,[m
+[32m+[m[32m    destination_path: Path,[m
+[32m+[m[32m    reserved_paths: set[Path],[m
+[32m+[m[32m) -> None:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Validate that the destination path is safe to write.[m
+[32m+[m
+[32m+[m[32m    Safety rules[m
+[32m+[m[32m    ------------[m
+[32m+[m[32m    - Destination must be within run_root.[m
+[32m+[m[32m    - Destination must not target reserved artifacts.[m
+[32m+[m[32m    - Destination file must not already exist.[m
+[32m+[m[32m    """[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        destination_path.relative_to(run_root)[m
+[32m+[m[32m    except ValueError as exc:[m
+[32m+[m[32m        raise BackupInvariantViolationError([m
+[32m+[m[32m            f"Planned destination escapes run root: {destination_path} (run root: {run_root})"[m
+[32m+[m[32m        ) from exc[m
+[32m+[m
+[32m+[m[32m    if destination_path in reserved_paths:[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Planned destination targets a reserved artifact: {destination_path}")[m
+[32m+[m
+[32m+[m[32m    if destination_path.exists():[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Destination already exists (will not overwrite): {destination_path}")[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _copy_file_strict(*, source_path: Path, destination_path: Path) -> None:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Copy a file with strict safety behavior.[m
+[32m+[m
+[32m+[m[32m    Parameters[m
+[32m+[m[32m    ----------[m
+[32m+[m[32m    source_path:[m
+[32m+[m[32m        Absolute source file path.[m
+[32m+[m[32m    destination_path:[m
+[32m+[m[32m        Absolute destination file path.[m
+[32m+[m
+[32m+[m[32m    Raises[m
+[32m+[m[32m    ------[m
+[32m+[m[32m    BackupInvariantViolationError[m
+[32m+[m[32m        If the source path is missing or is not a regular file, or if the source is a symlink.[m
+[32m+[m[32m    OSError[m
+[32m+[m[32m        If filesystem operations fail.[m
+[32m+[m[32m    """[m
+[32m+[m[32m    if not source_path.exists():[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Source file missing at execution time: {source_path}")[m
+[32m+[m[32m    if not source_path.is_file():[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Source path is not a file: {source_path}")[m
+[32m+[m[32m    if source_path.is_symlink():[m
+[32m+[m[32m        raise BackupInvariantViolationError(f"Refusing to copy symlink/reparse point: {source_path}")[m
+[32m+[m
+[32m+[m[32m    destination_parent = destination_path.parent[m
+[32m+[m[32m    destination_parent.mkdir(parents=True, exist_ok=True)[m
+[32m+[m
+[32m+[m[32m    shutil.copy2(source_path, destination_path)[m
+[1mdiff --git a/backup_engine/backup/materialize.py b/backup_engine/backup/materialize.py[m
+[1mindex 834db65..256c21d 100644[m
+[1m--- a/backup_engine/backup/materialize.py[m
+[1m+++ b/backup_engine/backup/materialize.py[m
+[36m@@ -4,14 +4,14 @@[m [mMaterialize a backup run directory and write canonical artifacts.[m
+ This module performs the first safe "side effect" phase of a backup run:[m
+ - create the run directory[m
+ - write plan.txt[m
+[31m-- write manifest.json (atomic)[m
+[32m+[m[32m- write run manifest.json (atomic)[m
+ [m
+ No file copying or deletion occurs in this phase.[m
+ [m
+ Design notes[m
+ ------------[m
+ - This module is deterministic given its inputs and an injectable Clock.[m
+[31m-- It uses the canonical manifest store for atomic writes.[m
+[32m+[m[32m- It uses the manifest store for atomic writes.[m
+ """[m
+ [m
+ from __future__ import annotations[m
+[36m@@ -19,21 +19,11 @@[m [mfrom __future__ import annotations[m
+ from dataclasses import dataclass[m
+ from datetime import datetime, timezone[m
+ from pathlib import Path[m
+[31m-from uuid import NAMESPACE_URL, UUID, uuid5[m
+ [m
+[31m-from backup_engine.backup.plan import BackupPlan[m
+[32m+[m[32mfrom backup_engine.backup.plan import BackupPlan, serialize_plan_for_manifest[m
+ from backup_engine.clock import Clock[m
+[31m-from backup_engine.data_models import ([m
+[31m-    ArchiveFormat,[m
+[31m-    ArchiveInfo,[m
+[31m-    BackupManifest,[m
+[31m-    EnvironmentInfo,[m
+[31m-    ManifestSchemaVersion,[m
+[31m-    SourceType,[m
+[31m-    DedicatedServerSource,[m
+[31m-)[m
+ from backup_engine.errors import BackupMaterializationError[m
+[31m-from backup_engine.manifest_store import write_manifest_atomic[m
+[32m+[m[32mfrom backup_engine.manifest_store import BackupRunManifestV2, write_run_manifest_atomic[m
+ [m
+ [m
+ @dataclass(frozen=True, slots=True)[m
+[36m@@ -50,13 +40,13 @@[m [mclass MaterializedBackupRun:[m
+     manifest_path:[m
+         Path to the written manifest.json.[m
+     manifest:[m
+[31m-        The manifest object that was persisted.[m
+[32m+[m[32m        The run manifest object that was written.[m
+     """[m
+ [m
+     run_root: Path[m
+     plan_text_path: Path[m
+     manifest_path: Path[m
+[31m-    manifest: BackupManifest[m
+[32m+[m[32m    manifest: BackupRunManifestV2[m
+ [m
+ [m
+ def materialize_backup_run([m
+[36m@@ -71,57 +61,31 @@[m [mdef materialize_backup_run([m
+ ) -> MaterializedBackupRun:[m
+     """[m
+     Create the run directory and write plan + manifest artifacts.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    plan:[m
+[31m-        Planned operations for this run.[m
+[31m-    run_root:[m
+[31m-        The run directory to create (must be unique per run).[m
+[31m-    run_id:[m
+[31m-        A stable, printable identifier for the run directory name.[m
+[31m-    plan_text:[m
+[31m-        Rendered plan report text to persist as plan.txt.[m
+[31m-    profile_name:[m
+[31m-        Profile name associated with this run.[m
+[31m-    source_root:[m
+[31m-        The validated source root for this run.[m
+[31m-    clock:[m
+[31m-        Injectable clock for deterministic timestamps.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    MaterializedBackupRun[m
+[31m-        Details about created paths and the persisted manifest.[m
+[31m-[m
+[31m-    Raises[m
+[31m-    ------[m
+[31m-    BackupMaterializationError[m
+[31m-        If the run directory or artifacts cannot be created safely.[m
+     """[m
+     try:[m
+[31m-        run_root = run_root.expanduser()[m
+         run_root.mkdir(parents=True, exist_ok=False)[m
+ [m
+         plan_text_path = run_root / "plan.txt"[m
+         _write_text_file(path=plan_text_path, content=plan_text)[m
+ [m
+         created_at_utc = _ensure_utc_datetime(clock.now())[m
+[31m-[m
+[31m-        backup_id = _derive_backup_id(profile_name=profile_name, run_id=run_id)[m
+[31m-        world_id = _derive_world_id(profile_name=profile_name, source_root=source_root)[m
+[31m-[m
+[31m-        manifest = _build_manifest([m
+[32m+[m[32m        operations_payload, scan_issues_payload = serialize_plan_for_manifest(plan)[m
+[32m+[m
+[32m+[m[32m        manifest = BackupRunManifestV2([m
+[32m+[m[32m            schema_version=BackupRunManifestV2.SCHEMA_VERSION,[m
+[32m+[m[32m            run_id=run_id,[m
+[32m+[m[32m            created_at_utc=created_at_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),[m
+[32m+[m[32m            archive_root=str(plan.archive_root),[m
+[32m+[m[32m            plan_text_path=str(plan_text_path),[m
+             profile_name=profile_name,[m
+[31m-            backup_id=backup_id,[m
+[31m-            world_id=world_id,[m
+[31m-            created_at_utc=created_at_utc,[m
+[31m-            source_root=source_root,[m
+[31m-            archive_root=plan.archive_root,[m
+[32m+[m[32m            source_root=str(source_root),[m
+[32m+[m[32m            operations=list(operations_payload),[m
+[32m+[m[32m            scan_issues=list(scan_issues_payload),[m
+[32m+[m[32m            execution=None,[m
+         )[m
+ [m
+         manifest_path = run_root / "manifest.json"[m
+[31m-        write_manifest_atomic(manifest_path, manifest)[m
+[32m+[m[32m        write_run_manifest_atomic(manifest_path, manifest)[m
+ [m
+         return MaterializedBackupRun([m
+             run_root=run_root,[m
+[36m@@ -133,148 +97,17 @@[m [mdef materialize_backup_run([m
+         raise BackupMaterializationError(f"Run directory already exists: {run_root}") from exc[m
+     except OSError as exc:[m
+         raise BackupMaterializationError(f"Failed to materialize run directory: {run_root} ({exc!s})") from exc[m
+[31m-    except ValueError as exc:[m
+[31m-        raise BackupMaterializationError(f"Failed to build manifest: {exc!s}") from exc[m
+ [m
+ [m
+ def _write_text_file(*, path: Path, content: str) -> None:[m
+     """[m
+     Write a UTF-8 text file with deterministic newlines.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    path:[m
+[31m-        Output file path.[m
+[31m-    content:[m
+[31m-        Text content to write.[m
+[31m-[m
+[31m-    Raises[m
+[31m-    ------[m
+[31m-    OSError[m
+[31m-        If writing fails.[m
+     """[m
+[31m-    with path.open("x", encoding="utf-8", newline="\n") as handle:[m
+[31m-        handle.write(content)[m
+[32m+[m[32m    path.write_text(content, encoding="utf-8", newline="\n")[m
+ [m
+ [m
+ def _ensure_utc_datetime(value: datetime) -> datetime:[m
+[31m-    """[m
+[31m-    Convert a datetime to a timezone-aware UTC datetime.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    value:[m
+[31m-        Datetime from the injected clock.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    datetime[m
+[31m-        A timezone-aware UTC datetime.[m
+[31m-    """[m
+[32m+[m[32m    """Ensure a datetime is timezone-aware and normalized to UTC."""[m
+     if value.tzinfo is None:[m
+         return value.replace(tzinfo=timezone.utc)[m
+     return value.astimezone(timezone.utc)[m
+[31m-[m
+[31m-[m
+[31m-def _derive_backup_id(*, profile_name: str, run_id: str) -> UUID:[m
+[31m-    """[m
+[31m-    Derive a deterministic backup_id for this run.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    profile_name:[m
+[31m-        Profile name.[m
+[31m-    run_id:[m
+[31m-        Run identifier string.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    UUID[m
+[31m-        Deterministic UUID derived from profile and run identifier.[m
+[31m-    """[m
+[31m-    return uuid5(NAMESPACE_URL, f"wcbt:backup:{profile_name}:{run_id}")[m
+[31m-[m
+[31m-[m
+[31m-def _derive_world_id(*, profile_name: str, source_root: Path) -> UUID:[m
+[31m-    """[m
+[31m-    Derive a deterministic world_id for a given source root.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    profile_name:[m
+[31m-        Profile name.[m
+[31m-    source_root:[m
+[31m-        Source root path.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    UUID[m
+[31m-        Deterministic UUID derived from profile and normalized source root.[m
+[31m-    """[m
+[31m-    normalized = str(source_root.resolve())[m
+[31m-    return uuid5(NAMESPACE_URL, f"wcbt:world:{profile_name}:{normalized}")[m
+[31m-[m
+[31m-[m
+[31m-def _build_manifest([m
+[31m-    *,[m
+[31m-    profile_name: str,[m
+[31m-    backup_id: UUID,[m
+[31m-    world_id: UUID,[m
+[31m-    created_at_utc: datetime,[m
+[31m-    source_root: Path,[m
+[31m-    archive_root: Path,[m
+[31m-) -> BackupManifest:[m
+[31m-    """[m
+[31m-    Build a minimal valid manifest for a materialized (pre-copy) run.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    profile_name:[m
+[31m-        Profile name.[m
+[31m-    backup_id:[m
+[31m-        Deterministic run ID.[m
+[31m-    world_id:[m
+[31m-        Deterministic source/world ID.[m
+[31m-    created_at_utc:[m
+[31m-        UTC timestamp for the run.[m
+[31m-    source_root:[m
+[31m-        Source root path.[m
+[31m-    archive_root:[m
+[31m-        Archive root path for this run.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    BackupManifest[m
+[31m-        Valid manifest instance.[m
+[31m-    """[m
+[31m-    environment = EnvironmentInfo([m
+[31m-        minecraft_version="unknown",[m
+[31m-        loader="unknown",[m
+[31m-        loader_version="unknown",[m
+[31m-        java_version="unknown",[m
+[31m-    )[m
+[31m-[m
+[31m-    source = DedicatedServerSource([m
+[31m-        type=SourceType.DEDICATED_SERVER,[m
+[31m-        server_root=str(source_root),[m
+[31m-        world_folder="unknown",[m
+[31m-    )[m
+[31m-[m
+[31m-    archive = ArchiveInfo([m
+[31m-        format=ArchiveFormat.ZIP,[m
+[31m-        filename=str(archive_root),[m
+[31m-        size_bytes=0,[m
+[31m-        sha256=None,[m
+[31m-    )[m
+[31m-[m
+[31m-    manifest = BackupManifest.new([m
+[31m-        backup_id=backup_id,[m
+[31m-        world_id=world_id,[m
+[31m-        created_at_utc=created_at_utc,[m
+[31m-        profile_name=profile_name,[m
+[31m-        environment=environment,[m
+[31m-        source=source,[m
+[31m-        archive=archive,[m
+[31m-    )[m
+[31m-    manifest.validate()[m
+[31m-    return manifest[m
+[1mdiff --git a/backup_engine/backup/service.py b/backup_engine/backup/service.py[m
+[1mindex da997a7..8853554 100644[m
+[1m--- a/backup_engine/backup/service.py[m
+[1m+++ b/backup_engine/backup/service.py[m
+[36m@@ -7,15 +7,18 @@[m [mThis module coordinates:[m
+ - source scanning[m
+ - deterministic planning[m
+ - deterministic reporting[m
+[31m-[m
+[31m-In plan-only mode, WCBT never deletes and does not create run directories unless[m
+[31m-explicitly asked to write a plan artifact.[m
+[31m-[m
+[31m-In materialize mode, WCBT:[m
+[31m-- creates a new archive run directory,[m
+[31m-- writes plan.txt,[m
+[31m-- writes manifest.json,[m
+[31m-but still performs no file copy or deletion.[m
+[32m+[m[32m- optional run materialization (mkdir + artifacts)[m
+[32m+[m[32m- optional copy execution (copy-only milestone)[m
+[32m+[m
+[32m+[m[32mSafety posture (v1)[m
+[32m+[m[32m-------------------[m
+[32m+[m[32m- Default behavior is plan-only (no filesystem writes, no deletion).[m
+[32m+[m[32m- Materialize mode creates a run directory and writes plan.txt + manifest.json.[m
+[32m+[m[32m- Execute mode copies planned files into the run directory:[m
+[32m+[m[32m  - copy-only (no deletion, no compression),[m
+[32m+[m[32m  - never overwrites,[m
+[32m+[m[32m  - fail-fast on invariant violations,[m
+[32m+[m[32m  - records outcomes deterministically.[m
+ """[m
+ [m
+ from __future__ import annotations[m
+[36m@@ -24,6 +27,7 @@[m [mfrom dataclasses import dataclass[m
+ from pathlib import Path[m
+ from typing import Iterable[m
+ [m
+[32m+[m[32mfrom backup_engine.backup.execute import execute_copy_plan[m
+ from backup_engine.backup.materialize import materialize_backup_run[m
+ from backup_engine.backup.plan import BackupPlan, attach_scan_issues, build_backup_plan[m
+ from backup_engine.backup.render import render_backup_plan_text[m
+[36m@@ -34,16 +38,19 @@[m [mfrom backup_engine.backup.scan import ([m
+     scan_source_tree,[m
+ )[m
+ from backup_engine.clock import Clock, SystemClock[m
+[31m-from backup_engine.errors import BackupMaterializationError, WcbtError[m
+[32m+[m[32mfrom backup_engine.errors import BackupExecutionError, WcbtError[m
+[32m+[m[32mfrom backup_engine.manifest_store import ([m
+[32m+[m[32m    BackupRunExecutionV1,[m
+[32m+[m[32m    BackupRunManifestV2,[m
+[32m+[m[32m    RunOperationResultV1,[m
+[32m+[m[32m    write_run_manifest_atomic,[m
+[32m+[m[32m)[m
+ from backup_engine.paths_and_safety import resolve_profile_paths, validate_source_path[m
+[31m-[m
+[32m+[m[32mfrom datetime import timezone[m
+ [m
+ class PlanArtifactWriteError(WcbtError):[m
+     """[m
+     Raised when a plan artifact cannot be written safely.[m
+[31m-[m
+[31m-    This error is used for failures such as attempting to overwrite an existing[m
+[31m-    file without explicit permission, or failing to create required directories.[m
+     """[m
+ [m
+ [m
+[36m@@ -51,15 +58,6 @@[m [mclass PlanArtifactWriteError(WcbtError):[m
+ class BackupRunContext:[m
+     """[m
+     Context for a single backup planning run.[m
+[31m-[m
+[31m-    Attributes[m
+[31m-    ----------[m
+[31m-    profile_name:[m
+[31m-        Profile name used to resolve profile paths.[m
+[31m-    source_root:[m
+[31m-        Validated source root directory.[m
+[31m-    archive_root:[m
+[31m-        Planned archive root directory.[m
+     """[m
+ [m
+     profile_name: str[m
+[36m@@ -81,52 +79,15 @@[m [mdef run_backup([m
+     plan_path: Path | None = None,[m
+     overwrite_plan: bool = False,[m
+     clock: Clock | None = None,[m
+[32m+[m[32m    execute: bool = False,[m
+ ) -> None:[m
+     """[m
+[31m-    Plan (and optionally materialize) a backup for a given profile.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    profile_name:[m
+[31m-        Profile name used to select the WCBT profile directory.[m
+[31m-    source:[m
+[31m-        Source directory to back up.[m
+[31m-    dry_run:[m
+[31m-        If True, plan and report only. If False, materialize the run[m
+[31m-        (mkdir + plan.txt + manifest.json).[m
+[31m-    data_root:[m
+[31m-        Optional override for WCBT data root (primarily for tests).[m
+[31m-    excluded_directory_names:[m
+[31m-        Optional extra directory names to exclude from traversal.[m
+[31m-    excluded_file_names:[m
+[31m-        Optional extra file names to exclude from traversal.[m
+[31m-    use_default_excludes:[m
+[31m-        If True, use built-in default excludes in addition to user-provided excludes.[m
+[31m-        If False, only the user-provided excludes are used.[m
+[31m-    max_items:[m
+[31m-        Maximum number of planned operations to print in the plan output.[m
+[31m-        Counts always reflect the full plan.[m
+[31m-    write_plan:[m
+[31m-        If True (plan-only), write the rendered plan report to disk.[m
+[31m-    plan_path:[m
+[31m-        Optional override for the plan output file path (plan-only).[m
+[31m-    overwrite_plan:[m
+[31m-        If True, allow overwriting an existing plan file (plan-only).[m
+[31m-    clock:[m
+[31m-        Clock used for deterministic archive identifiers. If not provided,[m
+[31m-        SystemClock is used.[m
+[31m-[m
+[31m-    Raises[m
+[31m-    ------[m
+[31m-    ValueError[m
+[31m-        If max_items is negative.[m
+[31m-    PlanArtifactWriteError[m
+[31m-        If writing the plan artifact is requested but cannot be done safely.[m
+[31m-    BackupMaterializationError[m
+[31m-        If materialization fails.[m
+[32m+[m[32m    Plan (and optionally materialize and execute) a backup for a given profile.[m
+     """[m
+     if max_items < 0:[m
+         raise ValueError("max_items must be non-negative.")[m
+[32m+[m[32m    if execute and dry_run:[m
+[32m+[m[32m        raise ValueError("execute=True is not valid in dry-run mode.")[m
+ [m
+     run_clock = clock or SystemClock()[m
+ [m
+[36m@@ -183,6 +144,69 @@[m [mdef run_backup([m
+     print(f"  Plan file     : {materialized.plan_text_path}")[m
+     print(f"  Manifest file : {materialized.manifest_path}")[m
+ [m
+[32m+[m[32m    if not execute:[m
+[32m+[m[32m        return[m
+[32m+[m
+[32m+[m[32m    summary = execute_copy_plan([m
+[32m+[m[32m        plan=plan_with_issues,[m
+[32m+[m[32m        run_root=materialized.run_root,[m
+[32m+[m[32m        reserved_paths=(materialized.plan_text_path, materialized.manifest_path),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    updated_manifest = _build_executed_run_manifest([m
+[32m+[m[32m        base_manifest=materialized.manifest,[m
+[32m+[m[32m        execution_summary=summary,[m
+[32m+[m[32m    )[m
+[32m+[m[32m    write_run_manifest_atomic(materialized.manifest_path, updated_manifest)[m
+[32m+[m
+[32m+[m[32m    print()[m
+[32m+[m[32m    print("Copy execution complete:")[m
+[32m+[m[32m    print(f"  Status        : {summary.status}")[m
+[32m+[m[32m    copied_count = sum(1 for r in summary.results if r.outcome.value == "copied")[m
+[32m+[m[32m    print(f"  Copied        : {copied_count}")[m
+[32m+[m[32m    print(f"  Results written: {materialized.manifest_path}")[m
+[32m+[m
+[32m+[m[32m    if summary.status != "success":[m
+[32m+[m[32m        raise BackupExecutionError("Copy execution failed. See manifest.json for per-operation results.")[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _build_executed_run_manifest([m
+[32m+[m[32m    *,[m
+[32m+[m[32m    base_manifest: BackupRunManifestV2,[m
+[32m+[m[32m    execution_summary,[m
+[32m+[m[32m) -> BackupRunManifestV2:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Create a new run manifest including execution results.[m
+[32m+[m[32m    """[m
+[32m+[m[32m    results: list[RunOperationResultV1] = [][m
+[32m+[m[32m    for r in execution_summary.results:[m
+[32m+[m[32m        results.append([m
+[32m+[m[32m            RunOperationResultV1([m
+[32m+[m[32m                operation_index=r.operation_index,[m
+[32m+[m[32m                operation_type=r.operation_type,[m
+[32m+[m[32m                relative_path=r.relative_path,[m
+[32m+[m[32m                source_path=r.source_path,[m
+[32m+[m[32m                destination_path=r.destination_path,[m
+[32m+[m[32m                outcome=r.outcome.value,[m
+[32m+[m[32m                message=r.message,[m
+[32m+[m[32m            )[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    execution = BackupRunExecutionV1(status=execution_summary.status, results=results)[m
+[32m+[m
+[32m+[m[32m    return BackupRunManifestV2([m
+[32m+[m[32m        schema_version=base_manifest.schema_version,[m
+[32m+[m[32m        run_id=base_manifest.run_id,[m
+[32m+[m[32m        created_at_utc=base_manifest.created_at_utc,[m
+[32m+[m[32m        archive_root=base_manifest.archive_root,[m
+[32m+[m[32m        plan_text_path=base_manifest.plan_text_path,[m
+[32m+[m[32m        profile_name=base_manifest.profile_name,[m
+[32m+[m[32m        source_root=base_manifest.source_root,[m
+[32m+[m[32m        operations=list(base_manifest.operations),[m
+[32m+[m[32m        scan_issues=list(base_manifest.scan_issues),[m
+[32m+[m[32m        execution=execution,[m
+[32m+[m[32m    )[m
+[32m+[m
+ [m
+ def _build_scan_rules([m
+     *,[m
+[36m@@ -190,9 +214,7 @@[m [mdef _build_scan_rules([m
+     excluded_file_names: Iterable[str] | None,[m
+     use_default_excludes: bool,[m
+ ) -> ScanRules:[m
+[31m-    """[m
+[31m-    Construct ScanRules from defaults and user-provided overrides.[m
+[31m-    """[m
+[32m+[m[32m    """Construct ScanRules from defaults and user-provided overrides."""[m
+     base_directories = DEFAULT_EXCLUDED_DIRECTORY_NAMES if use_default_excludes else frozenset()[m
+     base_files = DEFAULT_EXCLUDED_FILE_NAMES if use_default_excludes else frozenset()[m
+ [m
+[36m@@ -206,11 +228,9 @@[m [mdef _build_scan_rules([m
+ [m
+ [m
+ def _format_archive_id(clock: Clock) -> str:[m
+[31m-    """[m
+[31m-    Format a deterministic archive identifier using the provided clock.[m
+[31m-    """[m
+     current_time = clock.now()[m
+[31m-    return current_time.astimezone().strftime("%Y%m%d_%H%M%SZ")[m
+[32m+[m[32m    utc_time = current_time.astimezone(timezone.utc)[m
+[32m+[m[32m    return utc_time.strftime("%Y%m%d_%H%M%SZ")[m
+ [m
+ [m
+ def _build_backup_report_text([m
+[36m@@ -219,9 +239,7 @@[m [mdef _build_backup_report_text([m
+     *,[m
+     max_items: int,[m
+ ) -> str:[m
+[31m-    """[m
+[31m-    Build the full human-readable report that is printed and optionally persisted.[m
+[31m-    """[m
+[32m+[m[32m    """Build the full human-readable report that is printed and optionally persisted."""[m
+     lines: list[str] = [][m
+     lines.append(f"Profile     : {context.profile_name}")[m
+     lines.append(f"Source root : {context.source_root}")[m
+[36m@@ -232,23 +250,7 @@[m [mdef _build_backup_report_text([m
+ [m
+ [m
+ def _write_plan_artifact(*, output_path: Path, content: str, overwrite: bool) -> None:[m
+[31m-    """[m
+[31m-    Write a plan artifact to disk safely.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    output_path:[m
+[31m-        File path to write.[m
+[31m-    content:[m
+[31m-        Text content to write.[m
+[31m-    overwrite:[m
+[31m-        If True, overwrite an existing file. If False, fail if the file exists.[m
+[31m-[m
+[31m-    Raises[m
+[31m-    ------[m
+[31m-    PlanArtifactWriteError[m
+[31m-        If the artifact cannot be written safely.[m
+[31m-    """[m
+[32m+[m[32m    """Write a plan artifact to disk safely."""[m
+     try:[m
+         output_path = output_path.expanduser()[m
+         parent = output_path.parent[m
+[1mdiff --git a/backup_engine/errors.py b/backup_engine/errors.py[m
+[1mindex 6b473fb..3efebf4 100644[m
+[1m--- a/backup_engine/errors.py[m
+[1m+++ b/backup_engine/errors.py[m
+[36m@@ -24,3 +24,11 @@[m [mclass BackupCommitNotImplementedError(BackupError):[m
+ [m
+ class BackupMaterializationError(BackupError):[m
+     """Raised when a backup run cannot be materialized safely."""[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass BackupExecutionError(BackupError):[m
+[32m+[m[32m    """Raised when executing a backup plan fails."""[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass BackupInvariantViolationError(BackupExecutionError):[m
+[32m+[m[32m    """Raised when an execution-time invariant is violated."""[m
+[1mdiff --git a/backup_engine/manifest_store.py b/backup_engine/manifest_store.py[m
+[1mindex d797dd2..1ff22cc 100644[m
+[1m--- a/backup_engine/manifest_store.py[m
+[1m+++ b/backup_engine/manifest_store.py[m
+[36m@@ -15,9 +15,9 @@[m [mfrom __future__ import annotations[m
+ [m
+ import json[m
+ import os[m
+[31m-from dataclasses import dataclass[m
+[32m+[m[32mfrom dataclasses import dataclass, field[m
+ from pathlib import Path[m
+[31m-from typing import Any, Iterator, Mapping[m
+[32m+[m[32mfrom typing import Any, ClassVar, Iterator, Mapping, Protocol[m
+ [m
+ from .data_models import BackupManifest[m
+ from .exceptions import ManifestIOError, ManifestValidationError[m
+[36m@@ -29,89 +29,133 @@[m [mclass ManifestWriteOptions:[m
+ [m
+     pretty: bool = True[m
+     indent: int = 2[m
+[31m-    sort_keys: bool = False[m
+[32m+[m[32m    sort_keys: bool = True[m
+     ensure_ascii: bool = False[m
+ [m
+ [m
+[32m+[m[32mclass SupportsToDict(Protocol):[m
+[32m+[m[32m    """Protocol for manifest models that can be serialized to JSON."""[m
+[32m+[m
+[32m+[m[32m    def to_dict(self) -> dict[str, Any]:[m
+[32m+[m[32m        """Convert the manifest to a JSON-serializable dictionary."""[m
+[32m+[m[32m        ...[m
+[32m+[m
+[32m+[m
+ @dataclass(frozen=True, slots=True)[m
+[31m-class BackupRunManifestV1:[m
+[32m+[m[32mclass RunOperationResultV1:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Per-operation execution result (v1).[m
+[32m+[m
+[32m+[m[32m    Attributes[m
+[32m+[m[32m    ----------[m
+[32m+[m[32m    operation_index:[m
+[32m+[m[32m        Index into the original deterministic plan operations list.[m
+[32m+[m[32m    operation_type:[m
+[32m+[m[32m        Planned operation type string.[m
+[32m+[m[32m    relative_path:[m
+[32m+[m[32m        Relative file path string.[m
+[32m+[m[32m    source_path:[m
+[32m+[m[32m        Absolute source path string.[m
+[32m+[m[32m    destination_path:[m
+[32m+[m[32m        Absolute destination path string.[m
+[32m+[m[32m    outcome:[m
+[32m+[m[32m        Outcome string (stable external contract).[m
+[32m+[m[32m    message:[m
+[32m+[m[32m        Human-readable detail for the outcome.[m
+     """[m
+[31m-    Minimal canonical manifest for a single backup run.[m
+ [m
+[31m-    This manifest is intended for the milestone where the run is materialized[m
+[31m-    (directory created, plan and manifest written) without copying or deleting[m
+[31m-    any files yet.[m
+[32m+[m[32m    operation_index: int[m
+[32m+[m[32m    operation_type: str[m
+[32m+[m[32m    relative_path: str[m
+[32m+[m[32m    source_path: str[m
+[32m+[m[32m    destination_path: str[m
+[32m+[m[32m    outcome: str[m
+[32m+[m[32m    message: str[m
+[32m+[m
+[32m+[m[32m    def to_dict(self) -> dict[str, Any]:[m
+[32m+[m[32m        """Convert to a JSON-serializable payload."""[m
+[32m+[m[32m        return {[m
+[32m+[m[32m            "operation_index": self.operation_index,[m
+[32m+[m[32m            "operation_type": self.operation_type,[m
+[32m+[m[32m            "relative_path": self.relative_path,[m
+[32m+[m[32m            "source_path": self.source_path,[m
+[32m+[m[32m            "destination_path": self.destination_path,[m
+[32m+[m[32m            "outcome": self.outcome,[m
+[32m+[m[32m            "message": self.message,[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True, slots=True)[m
+[32m+[m[32mclass BackupRunExecutionV1:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Execution results container for a backup run.[m
+ [m
+     Attributes[m
+     ----------[m
+[31m-    schema_version:[m
+[31m-        Schema identifier for forward compatibility.[m
+[31m-    run_id:[m
+[31m-        Stable ID for the run directory and manifest association.[m
+[31m-    created_at_utc:[m
+[31m-        ISO-8601 timestamp in UTC, produced by an injectable clock.[m
+[31m-    archive_root:[m
+[31m-        Absolute archive run directory for this run.[m
+[31m-    plan_text_path:[m
+[31m-        Absolute path to the plan text file for this run.[m
+[31m-    operations:[m
+[31m-        Planned operations in deterministic order, serialized into a JSON-safe structure.[m
+[31m-    scan_issues:[m
+[31m-        Non-fatal scan issues captured during scanning, serialized into a JSON-safe structure.[m
+[32m+[m[32m    status:[m
+[32m+[m[32m        Overall status string: "success" or "failed".[m
+[32m+[m[32m    results:[m
+[32m+[m[32m        Per-operation results in deterministic order (same order as the plan).[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    status: str[m
+[32m+[m[32m    results: list[RunOperationResultV1][m
+[32m+[m
+[32m+[m[32m    def to_dict(self) -> dict[str, Any]:[m
+[32m+[m[32m        """Convert to a JSON-serializable payload."""[m
+[32m+[m[32m        return {[m
+[32m+[m[32m            "status": self.status,[m
+[32m+[m[32m            "results": [r.to_dict() for r in self.results],[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@dataclass(frozen=True, slots=True)[m
+[32m+[m[32mclass BackupRunManifestV2:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Canonical manifest for a single backup run (schema v2).[m
+[32m+[m
+[32m+[m[32m    This manifest is written during materialization (execution=None) and may be[m
+[32m+[m[32m    updated after execution to include deterministic outcomes.[m
+     """[m
+ [m
+[32m+[m[32m    SCHEMA_VERSION: ClassVar[str] = "wcbt_run_manifest_v2"[m
+[32m+[m
+     schema_version: str[m
+     run_id: str[m
+     created_at_utc: str[m
+     archive_root: str[m
+     plan_text_path: str[m
+[31m-    operations: list[Mapping[str, Any]][m
+[31m-    scan_issues: list[Mapping[str, Any]][m
+[32m+[m[32m    profile_name: str[m
+[32m+[m[32m    source_root: str[m
+[32m+[m[32m    operations: list[Mapping[str, Any]] = field(default_factory=list)[m
+[32m+[m[32m    scan_issues: list[Mapping[str, Any]] = field(default_factory=list)[m
+[32m+[m[32m    execution: BackupRunExecutionV1 | None = None[m
+ [m
+     def to_dict(self) -> dict[str, Any]:[m
+[31m-        """[m
+[31m-        Convert the manifest to a JSON-serializable dictionary.[m
+[31m-[m
+[31m-        Returns[m
+[31m-        -------[m
+[31m-        dict[str, Any][m
+[31m-            JSON-ready payload.[m
+[31m-        """[m
+[31m-        return {[m
+[32m+[m[32m        """Convert the manifest to a JSON-serializable dictionary."""[m
+[32m+[m[32m        payload: dict[str, Any] = {[m
+             "schema_version": self.schema_version,[m
+             "run_id": self.run_id,[m
+             "created_at_utc": self.created_at_utc,[m
+             "archive_root": self.archive_root,[m
+             "plan_text_path": self.plan_text_path,[m
+[32m+[m[32m            "profile_name": self.profile_name,[m
+[32m+[m[32m            "source_root": self.source_root,[m
+             "operations": list(self.operations),[m
+             "scan_issues": list(self.scan_issues),[m
+         }[m
+[32m+[m[32m        if self.execution is not None:[m
+[32m+[m[32m            payload["execution"] = self.execution.to_dict()[m
+[32m+[m[32m        return payload[m
+ [m
+ [m
+ def read_manifest(manifest_path: Path) -> BackupManifest:[m
+     """[m
+[31m-    Read and validate a manifest from disk.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    manifest_path[m
+[31m-        Path to a JSON manifest file.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    BackupManifest[m
+[31m-        Parsed and validated manifest.[m
+[31m-[m
+[31m-    Raises[m
+[31m-    ------[m
+[31m-    ManifestIOError[m
+[31m-        If the file cannot be read or decoded.[m
+[31m-    ManifestValidationError[m
+[31m-        If the file parses but fails schema validation.[m
+[32m+[m[32m    Read and validate a BackupManifest from disk.[m
+     """[m
+     try:[m
+[31m-        raw_text = manifest_path.read_text(encoding="utf-8")[m
+[31m-        payload = json.loads(raw_text)[m
+[32m+[m[32m        text = manifest_path.read_text(encoding="utf-8")[m
+[32m+[m[32m        payload = json.loads(text)[m
+     except OSError as exc:[m
+         raise ManifestIOError(f"Failed to read manifest: {manifest_path}") from exc[m
+     except json.JSONDecodeError as exc:[m
+[36m@@ -130,41 +174,42 @@[m [mdef write_json_atomic([m
+     options: ManifestWriteOptions | None = None,[m
+ ) -> None:[m
+     """[m
+[31m-    Atomically write a JSON payload to disk.[m
+[31m-[m
+[31m-    The file is written to a temporary path within the same directory, then[m
+[31m-    replaced using os.replace to guarantee atomicity on Windows NTFS.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    json_path[m
+[31m-        Target JSON path.[m
+[31m-    payload[m
+[31m-        JSON-serializable mapping.[m
+[31m-    options[m
+[31m-        Serialization options.[m
+[31m-[m
+[31m-    Raises[m
+[31m-    ------[m
+[31m-    ManifestIOError[m
+[31m-        If the JSON cannot be written.[m
+[32m+[m[32m    Write JSON atomically to disk.[m
+     """[m
+[31m-    options = options or ManifestWriteOptions()[m
+[32m+[m[32m    opts = options or ManifestWriteOptions()[m
+[32m+[m[32m    json_path = json_path.expanduser()[m
+[32m+[m[32m    directory = json_path.parent[m
+[32m+[m[32m    directory.mkdir(parents=True, exist_ok=True)[m
+[32m+[m
+[32m+[m[32m    temp_path = json_path.with_suffix(json_path.suffix + ".tmp")[m
+ [m
+     try:[m
+[31m-        json_path.parent.mkdir(parents=True, exist_ok=True)[m
+[31m-        tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")[m
+[31m-        json_text = json.dumps([m
+[31m-            dict(payload),[m
+[31m-            indent=options.indent if options.pretty else None,[m
+[31m-            separators=None if options.pretty else (",", ":"),[m
+[31m-            sort_keys=options.sort_keys,[m
+[31m-            ensure_ascii=options.ensure_ascii,[m
+[31m-        )[m
+[31m-        tmp_path.write_text(json_text, encoding="utf-8", newline="\n")[m
+[31m-        os.replace(tmp_path, json_path)[m
+[32m+[m[32m        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:[m
+[32m+[m[32m            if opts.pretty:[m
+[32m+[m[32m                json.dump([m
+[32m+[m[32m                    payload,[m
+[32m+[m[32m                    handle,[m
+[32m+[m[32m                    indent=opts.indent,[m
+[32m+[m[32m                    sort_keys=opts.sort_keys,[m
+[32m+[m[32m                    ensure_ascii=opts.ensure_ascii,[m
+[32m+[m[32m                )[m
+[32m+[m[32m                handle.write("\n")[m
+[32m+[m[32m            else:[m
+[32m+[m[32m                json.dump([m
+[32m+[m[32m                    payload,[m
+[32m+[m[32m                    handle,[m
+[32m+[m[32m                    separators=(",", ":"),[m
+[32m+[m[32m                    sort_keys=opts.sort_keys,[m
+[32m+[m[32m                    ensure_ascii=opts.ensure_ascii,[m
+[32m+[m[32m                )[m
+[32m+[m[32m        os.replace(temp_path, json_path)[m
+     except OSError as exc:[m
+[31m-        raise ManifestIOError(f"Failed to write JSON: {json_path}") from exc[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            if temp_path.exists():[m
+[32m+[m[32m                temp_path.unlink(missing_ok=True)[m
+[32m+[m[32m        except OSError:[m
+[32m+[m[32m            pass[m
+[32m+[m[32m        raise ManifestIOError(f"Failed to write JSON: {json_path} ({exc!s})") from exc[m
+ [m
+ [m
+ def write_manifest_atomic([m
+[36m@@ -173,90 +218,30 @@[m [mdef write_manifest_atomic([m
+     *,[m
+     options: ManifestWriteOptions | None = None,[m
+ ) -> None:[m
+[31m-    """[m
+[31m-    Atomically write a manifest to disk.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    manifest_path[m
+[31m-        Target manifest path.[m
+[31m-    manifest[m
+[31m-        Manifest object to serialize.[m
+[31m-    options[m
+[31m-        Serialization options.[m
+[31m-[m
+[31m-    Raises[m
+[31m-    ------[m
+[31m-    ManifestIOError[m
+[31m-        If the manifest cannot be written.[m
+[31m-    """[m
+[32m+[m[32m    """Atomically write a validated BackupManifest to disk."""[m
+[32m+[m[32m    manifest.validate()[m
+     write_json_atomic(manifest_path, manifest.to_dict(), options=options)[m
+ [m
+ [m
+ def write_run_manifest_atomic([m
+     manifest_path: Path,[m
+[31m-    manifest: BackupRunManifestV1,[m
+[32m+[m[32m    manifest: SupportsToDict,[m
+     *,[m
+     options: ManifestWriteOptions | None = None,[m
+ ) -> None:[m
+[31m-    """[m
+[31m-    Atomically write a BackupRunManifestV1 to disk.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    manifest_path[m
+[31m-        Target manifest path.[m
+[31m-    manifest[m
+[31m-        Backup run manifest object to serialize.[m
+[31m-    options[m
+[31m-        Serialization options.[m
+[31m-[m
+[31m-    Raises[m
+[31m-    ------[m
+[31m-    ManifestIOError[m
+[31m-        If the manifest cannot be written.[m
+[31m-    """[m
+[32m+[m[32m    """Atomically write a run manifest to disk."""[m
+     write_json_atomic(manifest_path, manifest.to_dict(), options=options)[m
+ [m
+ [m
+ def iter_manifest_paths(manifest_root: Path) -> Iterator[Path]:[m
+[31m-    """[m
+[31m-    Yield manifest file paths under a directory tree.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    manifest_root[m
+[31m-        Root directory containing manifest files.[m
+[31m-[m
+[31m-    Yields[m
+[31m-    ------[m
+[31m-    pathlib.Path[m
+[31m-        Paths ending in .json.[m
+[31m-[m
+[31m-    Notes[m
+[31m-    -----[m
+[31m-    This is intentionally dumb and deterministic: it yields in sorted path order.[m
+[31m-    """[m
+[31m-    if not manifest_root.exists():[m
+[31m-        return iter(())[m
+[31m-    paths = sorted(p for p in manifest_root.rglob("*.json") if p.is_file())[m
+[31m-    return iter(paths)[m
+[32m+[m[32m    """Yield manifest file paths under a directory tree."""[m
+[32m+[m[32m    for path in manifest_root.rglob("*.json"):[m
+[32m+[m[32m        if path.is_file():[m
+[32m+[m[32m            yield path[m
+ [m
+ [m
+ def load_all_manifests(manifest_root: Path) -> list[BackupManifest]:[m
+[31m-    """[m
+[31m-    Load all manifests under a root directory.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    manifest_root[m
+[31m-        Root directory to scan.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    list[BackupManifest][m
+[31m-        Valid manifests.[m
+[31m-    """[m
+[32m+[m[32m    """Load all backup manifests under a manifest root."""[m
+     manifests: list[BackupManifest] = [][m
+     for path in iter_manifest_paths(manifest_root):[m
+         manifests.append(read_manifest(path))[m
+[1mdiff --git a/tests/test_copy_execution.py b/tests/test_copy_execution.py[m
+[1mindex e69de29..4d3ee25 100644[m
+[1m--- a/tests/test_copy_execution.py[m
+[1m+++ b/tests/test_copy_execution.py[m
+[36m@@ -0,0 +1,87 @@[m
+[32m+[m[32mfrom __future__ import annotations[m
+[32m+[m
+[32m+[m[32mimport json[m
+[32m+[m[32mfrom datetime import datetime, timezone[m
+[32m+[m[32mfrom pathlib import Path[m
+[32m+[m
+[32m+[m[32mimport pytest[m
+[32m+[m
+[32m+[m[32mfrom backup_engine.backup.service import run_backup[m
+[32m+[m[32mfrom backup_engine.clock import FixedClock[m
+[32m+[m[32mfrom backup_engine.paths_and_safety import resolve_profile_paths[m
+[32m+[m[32mfrom backup_engine.errors import BackupExecutionError[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _read_json(path: Path) -> dict:[m
+[32m+[m[32m    return json.loads(path.read_text(encoding="utf-8"))[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_execute_copies_files_and_records_results(tmp_path: Path) -> None:[m
+[32m+[m[32m    profile_name = "test_profile"[m
+[32m+[m[32m    paths = resolve_profile_paths(profile_name, data_root=tmp_path)[m
+[32m+[m
+[32m+[m[32m    source_root = tmp_path / "source"[m
+[32m+[m[32m    (source_root / "nested").mkdir(parents=True)[m
+[32m+[m[32m    (source_root / "a.txt").write_text("alpha", encoding="utf-8")[m
+[32m+[m[32m    (source_root / "nested" / "b.txt").write_text("bravo", encoding="utf-8")[m
+[32m+[m
+[32m+[m[32m    clock = FixedClock(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc))[m
+[32m+[m
+[32m+[m[32m    run_backup([m
+[32m+[m[32m        profile_name=profile_name,[m
+[32m+[m[32m        source=source_root,[m
+[32m+[m[32m        dry_run=False,[m
+[32m+[m[32m        data_root=tmp_path,[m
+[32m+[m[32m        max_items=100,[m
+[32m+[m[32m        write_plan=False,[m
+[32m+[m[32m        clock=clock,[m
+[32m+[m[32m        execute=True,[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    run_root = paths.archives_root / "20250101_000000Z"[m
+[32m+[m[32m    assert run_root.is_dir()[m
+[32m+[m[32m    assert (run_root / "plan.txt").is_file()[m
+[32m+[m[32m    assert (run_root / "manifest.json").is_file()[m
+[32m+[m
+[32m+[m[32m    assert (run_root / "a.txt").read_text(encoding="utf-8") == "alpha"[m
+[32m+[m[32m    assert (run_root / "nested" / "b.txt").read_text(encoding="utf-8") == "bravo"[m
+[32m+[m
+[32m+[m[32m    manifest = _read_json(run_root / "manifest.json")[m
+[32m+[m[32m    assert manifest["schema_version"] == "wcbt_run_manifest_v2"[m
+[32m+[m[32m    assert manifest["run_id"] == "20250101_000000Z"[m
+[32m+[m[32m    assert manifest["execution"]["status"] == "success"[m
+[32m+[m[32m    assert len(manifest["execution"]["results"]) == len(manifest["operations"])[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef test_execute_fails_fast_on_reserved_destination_collision(tmp_path: Path) -> None:[m
+[32m+[m[32m    profile_name = "test_profile"[m
+[32m+[m[32m    paths = resolve_profile_paths(profile_name, data_root=tmp_path)[m
+[32m+[m
+[32m+[m[32m    source_root = tmp_path / "source"[m
+[32m+[m[32m    source_root.mkdir()[m
+[32m+[m[32m    (source_root / "plan.txt").write_text("I am a source file named plan.txt", encoding="utf-8")[m
+[32m+[m
+[32m+[m[32m    clock = FixedClock(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc))[m
+[32m+[m
+[32m+[m[32m    with pytest.raises(BackupExecutionError):[m
+[32m+[m[32m        run_backup([m
+[32m+[m[32m            profile_name=profile_name,[m
+[32m+[m[32m            source=source_root,[m
+[32m+[m[32m            dry_run=False,[m
+[32m+[m[32m            data_root=tmp_path,[m
+[32m+[m[32m            max_items=100,[m
+[32m+[m[32m            write_plan=False,[m
+[32m+[m[32m            clock=clock,[m
+[32m+[m[32m            execute=True,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    run_root = paths.archives_root / "20250101_000000Z"[m
+[32m+[m[32m    assert run_root.is_dir()[m
+[32m+[m[32m    assert (run_root / "plan.txt").is_file()[m
+[32m+[m[32m    assert (run_root / "manifest.json").is_file()[m
+[32m+[m
+[32m+[m[32m    manifest = _read_json(run_root / "manifest.json")[m
+[32m+[m[32m    assert manifest["execution"]["status"] == "failed"[m
+[32m+[m
+[32m+[m[32m    artifact_text = (run_root / "plan.txt").read_text(encoding="utf-8")[m
+[32m+[m[32m    assert "Profile" in artifact_text[m
+[1mdiff --git a/wcbt/cli.py b/wcbt/cli.py[m
+[1mindex e82bdf9..41b7ca8 100644[m
+[1m--- a/wcbt/cli.py[m
+[1m+++ b/wcbt/cli.py[m
+[36m@@ -10,6 +10,7 @@[m [mSafety posture (backup command)[m
+ - Default: plan-only (no filesystem writes, no deletion).[m
+ - --write-plan: still plan-only, but writes a rendered plan report to disk.[m
+ - --materialize: creates a run directory and writes plan.txt + manifest.json.[m
+[32m+[m[32m- --execute: materialize and then copy files (copy-only; no deletion).[m
+ """[m
+ [m
+ from __future__ import annotations[m
+[36m@@ -18,48 +19,23 @@[m [mimport argparse[m
+ from pathlib import Path[m
+ [m
+ from backup_engine.backup.service import run_backup[m
+[31m-from backup_engine.errors import WcbtError[m
+ from backup_engine.init_profile import init_profile, profile_paths_as_text[m
+ from backup_engine.paths_and_safety import SafetyViolationError[m
+[32m+[m[32mfrom backup_engine.errors import WcbtError[m
+ [m
+ [m
+[31m-def build_parser() -> argparse.ArgumentParser:[m
+[31m-    """[m
+[31m-    Build and return the top-level argument parser.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    argparse.ArgumentParser[m
+[31m-        Configured parser.[m
+[31m-    """[m
+[31m-    parser = argparse.ArgumentParser([m
+[31m-        prog="wcbt",[m
+[31m-        description="World Chronicle Backup Tool",[m
+[31m-    )[m
+[32m+[m[32mdef _build_parser() -> argparse.ArgumentParser:[m
+[32m+[m[32m    parser = argparse.ArgumentParser(prog="wcbt", description="World Chronicle Backup Tool (WCBT)")[m
+     sub = parser.add_subparsers(dest="command", required=True)[m
+ [m
+[31m-    init_p = sub.add_parser([m
+[31m-        "init",[m
+[31m-        help="Initialize a profile's on-disk folder structure (dry-run safe)",[m
+[31m-    )[m
+[31m-    init_p.add_argument("--profile", required=True, help="Profile name to initialize")[m
+[31m-    init_p.add_argument([m
+[31m-        "--data-root",[m
+[31m-        default=None,[m
+[31m-        help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",[m
+[31m-    )[m
+[31m-    init_p.add_argument([m
+[31m-        "--print-paths",[m
+[31m-        action="store_true",[m
+[31m-        help="Print resolved paths after initialization",[m
+[31m-    )[m
+[32m+[m[32m    init_p = sub.add_parser("init-profile", help="Initialize a profile directory structure.")[m
+[32m+[m[32m    init_p.add_argument("--profile", required=True, help="Profile name.")[m
+[32m+[m[32m    init_p.add_argument("--data-root", default=None, help="Override WCBT data root (primarily for testing).")[m
+[32m+[m[32m    init_p.add_argument("--print-paths", action="store_true", help="Print resolved paths after initialization.")[m
+ [m
+[31m-    backup_p = sub.add_parser([m
+[31m-        "backup",[m
+[31m-        help="Plan or materialize a backup run for a profile (default: plan-only)",[m
+[31m-    )[m
+[31m-    backup_p.add_argument("--profile", required=True, help="Profile name to back up")[m
+[31m-    backup_p.add_argument("--source", required=True, type=Path, help="Source folder to back up")[m
+[32m+[m[32m    backup_p = sub.add_parser("backup", help="Plan or execute a backup run.")[m
+[32m+[m[32m    backup_p.add_argument("--profile", required=True, help="Profile name.")[m
+[32m+[m[32m    backup_p.add_argument("--source", required=True, type=Path, help="Source directory to back up.")[m
+     backup_p.add_argument([m
+         "--data-root",[m
+         default=None,[m
+[36m@@ -98,53 +74,39 @@[m [mdef build_parser() -> argparse.ArgumentParser:[m
+     mode.add_argument([m
+         "--materialize",[m
+         action="store_true",[m
+[31m-        help="Create run directory and write plan.txt + manifest.json (still no copy/delete).",[m
+[32m+[m[32m        help="Create a run directory and write plan.txt + manifest.json (no copy).",[m
+[32m+[m[32m    )[m
+[32m+[m[32m    mode.add_argument([m
+[32m+[m[32m        "--execute",[m
+[32m+[m[32m        action="store_true",[m
+[32m+[m[32m        help="Materialize and then execute copy operations into the run directory (copy-only; no deletion).",[m
+     )[m
+ [m
+[31m-    # Plan artifact output (safe, text-only). Plan-only mode only.[m
+     backup_p.add_argument([m
+         "--write-plan",[m
+         action="store_true",[m
+[31m-        help="Write the rendered plan report to disk (plan-only mode).",[m
+[32m+[m[32m        help="In plan-only mode, write the rendered plan report to a plan.txt file.",[m
+     )[m
+     backup_p.add_argument([m
+         "--plan-path",[m
+         type=Path,[m
+         default=None,[m
+[31m-        help="Optional output path for the plan report (plan-only mode). Defaults to <archive_root>\\plan.txt.",[m
+[32m+[m[32m        help="In plan-only mode, override the path where plan.txt is written.",[m
+     )[m
+     backup_p.add_argument([m
+         "--overwrite-plan",[m
+         action="store_true",[m
+[31m-        help="Allow overwriting an existing plan file (plan-only mode).",[m
+[32m+[m[32m        help="In plan-only mode, allow overwriting an existing plan file.",[m
+     )[m
+ [m
+[31m-    # Placeholders (fine to keep these)[m
+[31m-    sub.add_parser("repair-index", help="Rebuild the SQLite index from manifests (not implemented yet)")[m
+[31m-    sub.add_parser("restore", help="Restore a backup by ID (not implemented yet)")[m
+[31m-    sub.add_parser("sync", help="Replicate backups to configured storage (not implemented yet)")[m
+[31m-[m
+     return parser[m
+ [m
+ [m
+ def main(argv: list[str] | None = None) -> int:[m
+[31m-    """[m
+[31m-    CLI entry point.[m
+[31m-[m
+[31m-    Parameters[m
+[31m-    ----------[m
+[31m-    argv:[m
+[31m-        Optional argument vector. If None, argparse uses sys.argv.[m
+[31m-[m
+[31m-    Returns[m
+[31m-    -------[m
+[31m-    int[m
+[31m-        Process exit code.[m
+[31m-    """[m
+[31m-    parser = build_parser()[m
+[32m+[m[32m    parser = _build_parser()[m
+     args = parser.parse_args(argv)[m
+ [m
+[31m-    if args.command == "init":[m
+[32m+[m[32m    if args.command == "init-profile":[m
+         data_root = Path(args.data_root) if args.data_root else None[m
+         paths = init_profile(profile_name=args.profile, data_root=data_root)[m
+         if args.print_paths:[m
+[36m@@ -154,12 +116,11 @@[m [mdef main(argv: list[str] | None = None) -> int:[m
+     if args.command == "backup":[m
+         data_root = Path(args.data_root) if args.data_root else None[m
+ [m
+[31m-        # Default is plan-only. --dry-run is accepted but redundant.[m
+[31m-        plan_only = not bool(args.materialize)[m
+[32m+[m[32m        plan_only = not bool(args.materialize or args.execute)[m
+ [m
+         if args.write_plan or args.plan_path is not None:[m
+             if not plan_only:[m
+[31m-                print("ERROR: --write-plan/--plan-path are only valid in plan-only mode (omit --materialize).")[m
+[32m+[m[32m                print("ERROR: --write-plan/--plan-path are only valid in plan-only mode (omit --materialize/--execute).")[m
+                 return 2[m
+ [m
+         try:[m
+[36m@@ -175,6 +136,7 @@[m [mdef main(argv: list[str] | None = None) -> int:[m
+                 write_plan=args.write_plan,[m
+                 plan_path=args.plan_path,[m
+                 overwrite_plan=args.overwrite_plan,[m
+[32m+[m[32m                execute=bool(args.execute),[m
+             )[m
+         except (SafetyViolationError, WcbtError, ValueError) as exc:[m
+             print(f"ERROR: {exc}")[m

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from backup_engine.backup.plan import BackupPlan, PlannedOperationType
 
-
 _OPERATION_ORDER: tuple[PlannedOperationType, ...] = (
     PlannedOperationType.COPY_FILE_TO_ARCHIVE,
     PlannedOperationType.SKIP_UNSAFE_PATH,
@@ -41,7 +40,7 @@ def render_backup_plan_text(plan: BackupPlan, *, max_items: int) -> str:
         raise ValueError("max_items must be non-negative.")
 
     lines: list[str] = []
-    lines.append("Backup dry-run plan")
+    lines.append("Backup plan")
     lines.append(f"Archive root: {plan.archive_root}")
     lines.append("")
 

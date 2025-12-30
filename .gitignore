@@ -1,0 +1,40 @@
+@'
+# ---- Python virtual environments ----
+.venv/
+venv/
+env/
+
+# ---- Python bytecode ----
+__pycache__/
+*.py[cod]
+
+# ---- Tool caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- IDEs ----
+.idea/
+.vscode/
+
+# ---- OS files ----
+Thumbs.db
+Desktop.ini
+
+# ---- Logs ----
+*.log
+
+# ---- Backup run artifacts (WCBT) ----
+**/plan.txt
+**/manifest.json
+**/archive_runs/
+**/runs/
+**/backup_runs/
+
+# ---- Coverage / reports ----
+.coverage
+htmlcov/
+
+# ---- Misc ----
+.DS_Store
+'@ | Set-Content -Encoding UTF8 .gitignore

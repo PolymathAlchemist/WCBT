@@ -146,9 +146,7 @@ def scan_source_tree(source_root: Path, rules: ScanRules) -> ScanResult:
         followlinks=False,
     ):
         directory_names[:] = [
-            name
-            for name in directory_names
-            if name not in rules.excluded_directory_names
+            name for name in directory_names if name not in rules.excluded_directory_names
         ]
         directory_names.sort()
         file_names.sort()
