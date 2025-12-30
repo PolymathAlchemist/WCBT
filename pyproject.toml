@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "World Chronicle Backup Tool (WCBT)"
 requires-python = ">=3.11"
 readme = "README.md"
-license = {text = "Proprietary"}
-authors = [{name = "Eric J. Turman"}]
-dependencies = [
-]
+license = { text = "Proprietary" }
+authors = [{ name = "Eric J. Turman" }]
+
+dependencies = []
 
 [build-system]
 requires = ["hatchling>=1.25"]
@@ -18,23 +18,38 @@ build-backend = "hatchling.build"
 gui = ["PySide6>=6.6"]
 security = ["keyring>=25.0"]
 compression = ["zstandard>=0.22"]
+
+# PEP 621–compliant dev dependencies (used by uv, CI, contributors)
 dev = [
-  "pytest>=8.0",
+  "pytest>=9.0",
+  "pytest-cov>=7.0.0",
   "ruff>=0.8",
-  "mypy>=1.8",
+  "mypy>=1.19",
+  "pip>=25.3",
+  "setuptools>=78.1.1",
+  "pip-audit>=2.10.0",
 ]
+
 
 [project.scripts]
 wcbt = "wcbt.cli:main"
 
+
+# -------------------------
+# Tooling Configuration
+# -------------------------
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
 [tool.ruff.lint]
 extend-select = ["I"]
 
 [tool.ruff.format]
 quote-style = "double"
+indent-style = "space"
+
 
 [tool.mypy]
 python_version = "3.11"
@@ -44,14 +59,26 @@ warn_redundant_casts = true
 disallow_any_generics = true
 no_implicit_optional = true
 
+
 [tool.pytest.ini_options]
+addopts = "-q --cov=backup_engine --cov=wcbt --cov-report=term-missing:skip-covered"
 testpaths = ["tests"]
-addopts = "-q"
+
+
+[tool.coverage.run]
+branch = true
+source = ["backup_engine", "wcbt"]
+
+[tool.coverage.report]
+fail_under = 0
+show_missing = true
+skip_covered = true
+
 
 [tool.hatch.build.targets.wheel]
 packages = ["wcbt", "backup_engine"]
 
 [dependency-groups]
 dev = [
-    "mypy>=1.19.1",
+    "pre-commit>=4.5.1",
 ]

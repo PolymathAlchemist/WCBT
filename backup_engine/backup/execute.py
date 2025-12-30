@@ -272,10 +272,14 @@ def _assert_destination_is_safe(
         ) from exc
 
     if destination_path in reserved_paths:
-        raise BackupInvariantViolationError(f"Planned destination targets a reserved artifact: {destination_path}")
+        raise BackupInvariantViolationError(
+            f"Planned destination targets a reserved artifact: {destination_path}"
+        )
 
     if destination_path.exists():
-        raise BackupInvariantViolationError(f"Destination already exists (will not overwrite): {destination_path}")
+        raise BackupInvariantViolationError(
+            f"Destination already exists (will not overwrite): {destination_path}"
+        )
 
 
 def _copy_file_strict(*, source_path: Path, destination_path: Path) -> None:
@@ -301,7 +305,9 @@ def _copy_file_strict(*, source_path: Path, destination_path: Path) -> None:
     if not source_path.is_file():
         raise BackupInvariantViolationError(f"Source path is not a file: {source_path}")
     if source_path.is_symlink():
-        raise BackupInvariantViolationError(f"Refusing to copy symlink/reparse point: {source_path}")
+        raise BackupInvariantViolationError(
+            f"Refusing to copy symlink/reparse point: {source_path}"
+        )
 
     destination_parent = destination_path.parent
     destination_parent.mkdir(parents=True, exist_ok=True)

@@ -50,7 +50,6 @@ def test_failure_on_first_rename_leaves_state_intact(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-
     stage = tmp_path / "stage"
     target = tmp_path / "target"
 

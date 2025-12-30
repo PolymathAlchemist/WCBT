@@ -37,7 +37,9 @@ def _validate_destination_root(destination_root: Path) -> None:
 
     # We will create artifact folders under destination_root. It must not be a file.
     if destination_root.exists() and not destination_root.is_dir():
-        raise RestoreIntentError(f"Destination root exists but is not a directory: {destination_root}")
+        raise RestoreIntentError(
+            f"Destination root exists but is not a directory: {destination_root}"
+        )
 
 
 def build_restore_plan(intent: RestoreIntent) -> RestorePlan:
@@ -87,7 +89,9 @@ def build_restore_plan(intent: RestoreIntent) -> RestorePlan:
 
     archive_root = Path(str(payload["archive_root"])).expanduser()
     if not archive_root.exists() or not archive_root.is_dir():
-        raise RestoreManifestError(f"archive_root does not exist or is not a directory: {archive_root}")
+        raise RestoreManifestError(
+            f"archive_root does not exist or is not a directory: {archive_root}"
+        )
 
     destination_root = intent.destination_root.expanduser()
 
@@ -140,7 +144,9 @@ def build_restore_plan(intent: RestoreIntent) -> RestorePlan:
         "source_root": str(payload.get("source_root", "")),
         "plan_text_path": str(payload.get("plan_text_path", "")),
         "manifest_sha256": manifest_sha256,
-        "operations_count": len(payload.get("operations", [])) if isinstance(payload.get("operations"), list) else 0,
+        "operations_count": len(payload.get("operations", []))
+        if isinstance(payload.get("operations"), list)
+        else 0,
     }
 
     return RestorePlan(

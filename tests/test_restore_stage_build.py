@@ -19,7 +19,9 @@ def test_stage_build_copies_files(tmp_path: Path) -> None:
     stage_root = tmp_path / "stage_root"
     candidates = [DummyCandidate(source, Path("nested") / "dest.txt")]
 
-    result = build_restore_stage(candidates=candidates, stage_root=stage_root, dry_run=False, journal=None)
+    result = build_restore_stage(
+        candidates=candidates, stage_root=stage_root, dry_run=False, journal=None
+    )
 
     assert result.staged_files == 1
     assert (stage_root / "nested" / "dest.txt").read_text(encoding="utf-8") == "hello"
@@ -32,7 +34,9 @@ def test_stage_build_dry_run_creates_no_files(tmp_path: Path) -> None:
     stage_root = tmp_path / "stage_root"
     candidates = [DummyCandidate(source, Path("dest.txt"))]
 
-    result = build_restore_stage(candidates=candidates, stage_root=stage_root, dry_run=True, journal=None)
+    result = build_restore_stage(
+        candidates=candidates, stage_root=stage_root, dry_run=True, journal=None
+    )
 
     assert result.planned_files == 1
     assert result.staged_files == 0

@@ -102,9 +102,7 @@ def run_restore(
     run_id = str(plan.run_id)
 
     stage_root = (
-            destination_root.with_name(f"{destination_root.name}.wcbt_stage")
-            / run_id
-            / "stage_root"
+        destination_root.with_name(f"{destination_root.name}.wcbt_stage") / run_id / "stage_root"
     )
 
     if dry_run:
@@ -172,7 +170,9 @@ def run_restore(
     )
 
     stage_root = (
-        destination_root.with_name(f"{destination_root.name}.wcbt_stage") / str(plan.run_id) / "stage_root"
+        destination_root.with_name(f"{destination_root.name}.wcbt_stage")
+        / str(plan.run_id)
+        / "stage_root"
     )
 
     stage_result = build_restore_stage(

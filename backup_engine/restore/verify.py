@@ -96,8 +96,7 @@ def _extract_source_path(candidate_dict: Mapping[str, Any]) -> Path:
             break
     if source_path is None:
         raise RestoreVerificationError(
-            "Restore candidate missing source path. "
-            f"Keys present: {sorted(candidate_dict.keys())}"
+            f"Restore candidate missing source path. Keys present: {sorted(candidate_dict.keys())}"
         )
     return source_path
 
@@ -156,8 +155,7 @@ def verify_restore_stage(
         if journal is not None:
             journal.append(
                 "verify_stage_dry_run",
-                {"result": "skipped", "verification_mode": mode,
-                 "planned_files": planned_files},
+                {"result": "skipped", "verification_mode": mode, "planned_files": planned_files},
             )
         return VerificationResult(
             verified_files=planned_files,
@@ -190,8 +188,7 @@ def verify_restore_stage(
 
         source_path = _extract_source_path(candidate_dict)
         if not source_path.exists() or not source_path.is_file():
-            raise RestoreVerificationError(
-                f"Source file missing or not a file: {source_path}")
+            raise RestoreVerificationError(f"Source file missing or not a file: {source_path}")
 
         expected_size = source_path.stat().st_size
         actual_size = staged_path.stat().st_size
@@ -208,7 +205,9 @@ def verify_restore_stage(
 
         verified_files += 1
 
-        if journal is not None and (index == 0 or (index + 1) % 500 == 0 or (index + 1) == planned_files):
+        if journal is not None and (
+            index == 0 or (index + 1) % 500 == 0 or (index + 1) == planned_files
+        ):
             journal.append(
                 "verify_stage_progress",
                 {"verified_files": verified_files, "planned_files": planned_files},

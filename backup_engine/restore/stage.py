@@ -189,7 +189,9 @@ def build_restore_stage(
 
         staged_files += 1
 
-        if journal is not None and (index == 0 or (index + 1) % 250 == 0 or (index + 1) == planned_files):
+        if journal is not None and (
+            index == 0 or (index + 1) % 250 == 0 or (index + 1) == planned_files
+        ):
             journal.append(
                 "stage_build_progress",
                 {"staged_files": staged_files, "planned_files": planned_files},
@@ -201,4 +203,6 @@ def build_restore_stage(
             {"staged_files": staged_files, "planned_files": planned_files},
         )
 
-    return StageBuildResult(staged_files=staged_files, planned_files=planned_files, stage_root=stage_root)
+    return StageBuildResult(
+        staged_files=staged_files, planned_files=planned_files, stage_root=stage_root
+    )

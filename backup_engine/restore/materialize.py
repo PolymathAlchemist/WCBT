@@ -26,10 +26,14 @@ def _relative_path_to_parts(relative_path: str) -> list[str]:
     # Enforce invariants: no absolute paths, no traversal.
     for part in parts:
         if part in (".", ".."):
-            raise RestoreMaterializationError(f"relative_path contains traversal: {relative_path!r}")
+            raise RestoreMaterializationError(
+                f"relative_path contains traversal: {relative_path!r}"
+            )
         if ":" in part:
             # Conservative: block drive-like segments and other colon uses.
-            raise RestoreMaterializationError(f"relative_path contains invalid segment: {relative_path!r}")
+            raise RestoreMaterializationError(
+                f"relative_path contains invalid segment: {relative_path!r}"
+            )
 
     return parts
 
@@ -62,7 +66,9 @@ def materialize_restore_candidates(plan: RestorePlan) -> list[RestoreCandidate]:
     # The service layer passes the full run manifest operations list here via plan.source_manifest shadowing.
     run_ops = plan.source_manifest.get("_operations_full")
     if not isinstance(run_ops, list):
-        raise RestoreMaterializationError("RestorePlan missing _operations_full list (internal invariant).")
+        raise RestoreMaterializationError(
+            "RestorePlan missing _operations_full list (internal invariant)."
+        )
 
     candidates: list[RestoreCandidate] = []
     for idx, op_any in enumerate(run_ops):

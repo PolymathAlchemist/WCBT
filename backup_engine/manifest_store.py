@@ -199,7 +199,6 @@ def write_manifest_json_atomic(manifest_path: Path, payload: Mapping[str, Any]) 
     write_json_atomic(manifest_path, payload)
 
 
-
 def read_manifest(manifest_path: Path) -> BackupManifest:
     """
     Read and validate a BackupManifest from disk.

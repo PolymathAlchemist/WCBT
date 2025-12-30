@@ -134,12 +134,12 @@ def run_backup(
 
     lock_path = build_profile_lock_path(work_root=paths.work_root)
     with acquire_profile_lock(
-            lock_path=lock_path,
-            profile_name=profile_name,
-            command="backup",
-            run_id=archive_id,
-            force=force,
-            break_lock=break_lock,
+        lock_path=lock_path,
+        profile_name=profile_name,
+        command="backup",
+        run_id=archive_id,
+        force=force,
+        break_lock=break_lock,
     ):
         materialized = materialize_backup_run(
             plan=plan_with_issues,
@@ -163,8 +163,7 @@ def run_backup(
         summary = execute_copy_plan(
             plan=plan_with_issues,
             run_root=materialized.run_root,
-            reserved_paths=(materialized.plan_text_path,
-                            materialized.manifest_path),
+            reserved_paths=(materialized.plan_text_path, materialized.manifest_path),
         )
 
         updated_manifest = _build_executed_run_manifest(
@@ -176,14 +175,14 @@ def run_backup(
         print()
         print("Copy execution complete:")
         print(f"  Status        : {summary.status}")
-        copied_count = sum(
-            1 for r in summary.results if r.outcome.value == "copied")
+        copied_count = sum(1 for r in summary.results if r.outcome.value == "copied")
         print(f"  Copied        : {copied_count}")
         print(f"  Results written: {materialized.manifest_path}")
 
         if summary.status != "success":
             raise BackupExecutionError(
-                "Copy execution failed. See manifest.json for per-operation results.")
+                "Copy execution failed. See manifest.json for per-operation results."
+            )
 
 
 def _build_executed_run_manifest(

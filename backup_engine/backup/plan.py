@@ -226,10 +226,14 @@ def attach_scan_issues(plan: BackupPlan, issues: list[ScanIssue]) -> BackupPlan:
     BackupPlan
         New plan with scan issues included.
     """
-    return BackupPlan(archive_root=plan.archive_root, operations=plan.operations, scan_issues=issues)
+    return BackupPlan(
+        archive_root=plan.archive_root, operations=plan.operations, scan_issues=issues
+    )
 
 
-def serialize_plan_for_manifest(plan: BackupPlan) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+def serialize_plan_for_manifest(
+    plan: BackupPlan,
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
     """
     Serialize a plan into JSON-safe structures for inclusion in a run manifest.
 

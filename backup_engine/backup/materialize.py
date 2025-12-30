@@ -96,7 +96,9 @@ def materialize_backup_run(
     except FileExistsError as exc:
         raise BackupMaterializationError(f"Run directory already exists: {run_root}") from exc
     except OSError as exc:
-        raise BackupMaterializationError(f"Failed to materialize run directory: {run_root} ({exc!s})") from exc
+        raise BackupMaterializationError(
+            f"Failed to materialize run directory: {run_root} ({exc!s})"
+        ) from exc
 
 
 def _write_text_file(*, path: Path, content: str) -> None:

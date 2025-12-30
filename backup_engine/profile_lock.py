@@ -247,7 +247,9 @@ def _evaluate_existing_lock(
     if provably_stale:
         if force:
             return _BreakDecision(True, "Breaking provably stale lock due to --force.")
-        return _BreakDecision(False, "Lock appears to be stale. Re-run with --force to break it.\n" + details)
+        return _BreakDecision(
+            False, "Lock appears to be stale. Re-run with --force to break it.\n" + details
+        )
 
     if break_lock:
         return _BreakDecision(True, "Breaking lock due to --break-lock.")

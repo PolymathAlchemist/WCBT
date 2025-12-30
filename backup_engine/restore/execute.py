@@ -239,4 +239,3 @@ def promote_stage_to_destination(
     """
     plan = plan_promotion(stage_root=stage_root, target_root=destination_root, run_id=run_id)
     return execute_promotion(plan=plan, dry_run=dry_run, journal=journal)
-

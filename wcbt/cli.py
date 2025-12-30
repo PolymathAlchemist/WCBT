@@ -31,8 +31,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     init_p = sub.add_parser("init-profile", help="Initialize a profile directory structure.")
     init_p.add_argument("--profile", required=True, help="Profile name.")
-    init_p.add_argument("--data-root", default=None, help="Override WCBT data root (primarily for testing).")
-    init_p.add_argument("--print-paths", action="store_true", help="Print resolved paths after initialization.")
+    init_p.add_argument(
+        "--data-root", default=None, help="Override WCBT data root (primarily for testing)."
+    )
+    init_p.add_argument(
+        "--print-paths", action="store_true", help="Print resolved paths after initialization."
+    )
 
     backup_p = sub.add_parser("backup", help="Plan or execute a backup run.")
     backup_p.add_argument("--profile", required=True, help="Profile name.")
@@ -111,11 +115,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="In plan-only mode, allow overwriting an existing plan file.",
     )
 
-    verify_p = sub.add_parser("verify",
-                              help="Verify a materialized run by hashing archived files.")
+    verify_p = sub.add_parser("verify", help="Verify a materialized run by hashing archived files.")
     verify_p.add_argument("--profile", required=True, help="Profile name.")
-    verify_p.add_argument("--run-id", required=True,
-                          help="Run ID to verify (directory name under archives root).")
+    verify_p.add_argument(
+        "--run-id", required=True, help="Run ID to verify (directory name under archives root)."
+    )
     verify_p.add_argument(
         "--data-root",
         default=None,
@@ -165,7 +169,7 @@ def _build_parser() -> argparse.ArgumentParser:
     restore_p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Plan/materialize only. Execution is not implemented in this milestone.",
+        help="Plan/materialize only (no promotion into destination).",
     )
 
     return parser
@@ -189,7 +193,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.write_plan or args.plan_path is not None:
             if not plan_only:
-                print("ERROR: --write-plan/--plan-path are only valid in plan-only mode (omit --materialize/--execute).")
+                print(
+                    "ERROR: --write-plan/--plan-path are only valid in plan-only mode (omit --materialize/--execute)."
+                )
                 return 2
 
         try:
@@ -239,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
                 destination_root=args.dest,
                 mode=args.mode,
                 verify=args.verify,
-                dry_run=True,  # restore is plan/materialize only in this milestone
+                dry_run=args.dry_run,
                 data_root=data_root,
             )
         except (SafetyViolationError, WcbtError, ValueError) as exc:

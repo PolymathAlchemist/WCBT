@@ -62,7 +62,6 @@ def test_verify_stage_size_mode_passes(tmp_path: Path) -> None:
     assert result.verified_files == 1
 
 
-
 def test_verify_stage_size_mode_fails_on_missing_file(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     source_root.mkdir()
