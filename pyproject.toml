@@ -13,22 +13,10 @@ dependencies = []
 requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
-
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
 security = ["keyring>=25.0"]
 compression = ["zstandard>=0.22"]
-
-# PEP 621–compliant dev dependencies (used by uv, CI, contributors)
-dev = [
-  "pytest>=9.0",
-  "pytest-cov>=7.0.0",
-  "ruff>=0.8",
-  "mypy>=1.19",
-  "pip>=25.3",
-  "setuptools>=78.1.1",
-  "pip-audit>=2.10.0",
-]
 
 
 [project.scripts]
@@ -70,7 +58,7 @@ branch = true
 source = ["backup_engine", "wcbt"]
 
 [tool.coverage.report]
-fail_under = 0
+fail_under = 60
 show_missing = true
 skip_covered = true
 
@@ -81,4 +69,9 @@ packages = ["wcbt", "backup_engine"]
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1",
+    "pytest>=9.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.8",
+    "mypy>=1.19",
+    "pip-audit>=2.10.0",
 ]
