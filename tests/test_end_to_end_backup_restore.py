@@ -51,12 +51,12 @@ def _assert_tree_matches(source_root: Path, restored_root: Path, files: list[_Fi
         assert src_path.exists(), f"Missing expected source file: {src_path}"
         assert dst_path.exists(), f"Missing restored file: {dst_path}"
 
-        assert (
-            dst_path.read_bytes() == src_path.read_bytes()
-        ), f"Content mismatch: {spec.relative_path}"
-        assert (
-            dst_path.stat().st_size == src_path.stat().st_size
-        ), f"Size mismatch: {spec.relative_path}"
+        assert dst_path.read_bytes() == src_path.read_bytes(), (
+            f"Content mismatch: {spec.relative_path}"
+        )
+        assert dst_path.stat().st_size == src_path.stat().st_size, (
+            f"Size mismatch: {spec.relative_path}"
+        )
 
 
 def test_e2e_backup_then_restore_verify_size_and_artifacts_survive(tmp_path: Path) -> None:
@@ -110,6 +110,6 @@ def test_e2e_backup_then_restore_verify_size_and_artifacts_survive(tmp_path: Pat
     # Artifacts must survive promotion and land in the final destination root.
     artifacts_root = restore_destination / ".wcbt_restore"
     assert artifacts_root.exists(), "Expected restore artifacts root to exist after promotion."
-    assert (
-        artifacts_root.is_dir()
-    ), "Expected restore artifacts root to be a directory after promotion."
+    assert artifacts_root.is_dir(), (
+        "Expected restore artifacts root to be a directory after promotion."
+    )

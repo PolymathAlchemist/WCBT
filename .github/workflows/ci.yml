@@ -18,6 +18,9 @@ jobs:
       - name: Sync
         run: uv sync --dev
 
+      - name: Audit
+        run: uv audit
+
       - name: Ruff
         run: uv run ruff check .
 
