@@ -189,6 +189,7 @@ def run_restore(
         verification_mode=verify,
         dry_run=dry_run,
         journal=journal,
+        artifacts_root=artifacts_root,
     )
 
     journal.append(

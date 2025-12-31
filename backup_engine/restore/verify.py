@@ -6,6 +6,13 @@ from typing import Any, Mapping, Optional
 
 from .errors import RestoreError
 from .journal import RestoreExecutionJournal
+from .verification_results import (
+    RestoreVerifyOutcome,
+    RestoreVerifyResult,
+    RestoreVerifySummary,
+    append_jsonl,
+    write_json,
+)
 
 
 class RestoreVerificationError(RestoreError):
@@ -108,6 +115,7 @@ def verify_restore_stage(
     verification_mode: str,
     dry_run: bool,
     journal: RestoreExecutionJournal | None = None,
+    artifacts_root: Path | None = None,
 ) -> VerificationResult:
     """
     Verify staged restore files before promotion.
@@ -141,6 +149,12 @@ def verify_restore_stage(
     planned_files = len(candidates)
     verified_files = 0
 
+    results_path: Path | None = None
+    summary_path: Path | None = None
+    if artifacts_root is not None:
+        results_path = artifacts_root / "stage_verify_results.jsonl"
+        summary_path = artifacts_root / "stage_verify_summary.json"
+
     if journal is not None:
         journal.append(
             "verify_stage_planned",
@@ -152,11 +166,39 @@ def verify_restore_stage(
         )
 
     if dry_run:
+        if results_path is not None:
+            for index, candidate in enumerate(candidates):
+                candidate_dict = _candidate_to_dict(candidate)
+                rel_dest = _extract_relative_destination_path(candidate_dict)
+                staged_path = stage_root / rel_dest
+
+                row = RestoreVerifyResult(
+                    candidate_index=index,
+                    relative_path=str(rel_dest),
+                    staged_path=str(staged_path),
+                    outcome=RestoreVerifyOutcome.SKIPPED,
+                    message="dry_run=True",
+                )
+                append_jsonl(results_path, row.to_dict())
+
+            assert summary_path is not None
+            write_json(
+                summary_path,
+                RestoreVerifySummary(
+                    status="skipped",
+                    verification_mode=mode,
+                    planned_files=planned_files,
+                    verified_files=0,
+                    failed_files=0,
+                ).to_dict(),
+            )
+
         if journal is not None:
             journal.append(
                 "verify_stage_dry_run",
                 {"result": "skipped", "verification_mode": mode, "planned_files": planned_files},
             )
+
         return VerificationResult(
             verified_files=planned_files,
             planned_files=planned_files,
@@ -164,8 +206,38 @@ def verify_restore_stage(
         )
 
     if mode == "none":
+        if results_path is not None:
+            for index, candidate in enumerate(candidates):
+                candidate_dict = _candidate_to_dict(candidate)
+                rel_dest = _extract_relative_destination_path(candidate_dict)
+                staged_path = stage_root / rel_dest
+
+                append_jsonl(
+                    results_path,
+                    RestoreVerifyResult(
+                        candidate_index=index,
+                        relative_path=str(rel_dest),
+                        staged_path=str(staged_path),
+                        outcome=RestoreVerifyOutcome.SKIPPED,
+                        message="verification_mode_none",
+                    ).to_dict(),
+                )
+
+            assert summary_path is not None
+            write_json(
+                summary_path,
+                RestoreVerifySummary(
+                    status="skipped",
+                    verification_mode=mode,
+                    planned_files=planned_files,
+                    verified_files=planned_files,
+                    failed_files=0,
+                ).to_dict(),
+            )
+
         if journal is not None:
             journal.append("verify_stage_skipped", {"reason": "verification_mode_none"})
+
         return VerificationResult(
             verified_files=planned_files,
             planned_files=planned_files,
@@ -192,18 +264,47 @@ def verify_restore_stage(
 
         expected_size = source_path.stat().st_size
         actual_size = staged_path.stat().st_size
-        if actual_size != expected_size:
-            raise RestoreVerificationError(
-                f"Size mismatch for {staged_path}: expected {expected_size}, got {actual_size}"
-            )
 
-        actual_size = staged_path.stat().st_size
         if actual_size != expected_size:
+            if results_path is not None:
+                append_jsonl(
+                    results_path,
+                    RestoreVerifyResult(
+                        candidate_index=index,
+                        relative_path=str(rel_dest),
+                        staged_path=str(staged_path),
+                        outcome=RestoreVerifyOutcome.FAILED,
+                        message=f"expected {expected_size}, got {actual_size}",
+                    ).to_dict(),
+                )
+                assert summary_path is not None
+                write_json(
+                    summary_path,
+                    RestoreVerifySummary(
+                        status="failed",
+                        verification_mode=mode,
+                        planned_files=planned_files,
+                        verified_files=verified_files,
+                        failed_files=1,
+                    ).to_dict(),
+                )
+
             raise RestoreVerificationError(
                 f"Size mismatch for {staged_path}: expected {expected_size}, got {actual_size}"
             )
 
         verified_files += 1
+
+        if results_path is not None:
+            append_jsonl(
+                results_path,
+                RestoreVerifyResult(
+                    candidate_index=index,
+                    relative_path=str(rel_dest),
+                    staged_path=str(staged_path),
+                    outcome=RestoreVerifyOutcome.VERIFIED,
+                ).to_dict(),
+            )
 
         if journal is not None and (
             index == 0 or (index + 1) % 500 == 0 or (index + 1) == planned_files
@@ -217,6 +318,18 @@ def verify_restore_stage(
         journal.append(
             "verify_stage_completed",
             {"verified_files": verified_files, "planned_files": planned_files, "mode": mode},
+        )
+
+    if summary_path is not None:
+        write_json(
+            summary_path,
+            RestoreVerifySummary(
+                status="success",
+                verification_mode=mode,
+                planned_files=planned_files,
+                verified_files=verified_files,
+                failed_files=0,
+            ).to_dict(),
         )
 
     return VerificationResult(
