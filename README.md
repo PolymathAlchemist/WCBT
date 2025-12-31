@@ -99,7 +99,61 @@ Dry-run will:
 
 ---
 
-## Restore semantics
+### Restore copy execution (stage build)
+
+A restore operation is executed in multiple explicit phases to ensure safety, inspectability, and atomicity:
+
+1. **Plan and candidate materialization**
+   - A restore plan is built from the run manifest.
+   - Restore candidates are materialized and written as artifacts.
+
+2. **Stage build (copy execution)**
+   - All restore candidates are copied into an isolated *stage root*.
+   - Copies are performed atomically (temporary file + rename).
+   - Failures abort the restore before promotion.
+
+3. **Verification**
+   - Optional verification is performed against the staged files
+     (e.g., size verification).
+
+4. **Atomic promotion**
+   - On success, the staged tree is atomically promoted to the destination.
+
+#### Copy execution artifacts
+
+During the **stage build** phase, restore copy execution produces inspectable artifacts:
+
+- `stage_copy_results.jsonl`  
+  One JSON object per restore candidate, recording:
+  - source path
+  - relative destination path
+  - staged destination path
+  - execution outcome (`copied`, `skipped_dry_run`, or `failed`)
+  - optional error message
+
+- `stage_copy_summary.json`  
+  A summary of the stage build execution, including:
+  - overall status (`success` or `failed`)
+  - number of planned files
+  - number of staged files
+  - number of failed files
+
+#### Artifact location
+
+- **Dry-run restore**
+  - Artifacts are written directly under the destination root:
+    ```
+    <destination_root>/.wcbt_restore/<run_id>/
+    ```
+
+- **Non-dry-run restore**
+  - Artifacts are written inside the staged tree so they survive promotion:
+    ```
+    <destination_root>.wcbt_stage/<run_id>/stage_root/.wcbt_restore/<run_id>/
+    ```
+
+These artifacts provide a durable, auditable record of restore execution and are preserved after a successful restore.
+
 
 ### Dry-run artifacts
 
