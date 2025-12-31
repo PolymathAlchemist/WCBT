@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from .errors import RestoreError
+from .execution_results import (
+    RestoreCopyOutcome,
+    RestoreCopyResult,
+    RestoreCopySummary,
+    append_jsonl,
+    write_json,
+)
 from .journal import RestoreExecutionJournal
 
 
@@ -125,6 +132,7 @@ def build_restore_stage(
     stage_root: Path,
     dry_run: bool,
     journal: RestoreExecutionJournal | None = None,
+    artifacts_root: Path | None = None,
 ) -> StageBuildResult:
     """
     Build a staged restore tree under `stage_root`.
@@ -141,6 +149,11 @@ def build_restore_stage(
         If True, do not copy any files.
     journal:
         Optional execution journal.
+    artifacts_root:
+        Optional directory to write stage copy execution artifacts. If provided, this
+        function writes:
+        - stage_copy_results.jsonl
+        - stage_copy_summary.json
 
     Returns
     -------
@@ -154,6 +167,11 @@ def build_restore_stage(
     """
     planned_files = len(candidates)
     staged_files = 0
+    results_path: Path | None = None
+    summary_path: Path | None = None
+    if artifacts_root is not None:
+        results_path = artifacts_root / "stage_copy_results.jsonl"
+        summary_path = artifacts_root / "stage_copy_summary.json"
 
     if journal is not None:
         journal.append(
@@ -162,8 +180,34 @@ def build_restore_stage(
         )
 
     if dry_run:
+        if results_path is not None:
+            for index, candidate in enumerate(candidates):
+                candidate_dict = _candidate_to_dict(candidate)
+                source_path, rel_dest = _extract_candidate_paths(candidate_dict)
+                destination_path = stage_root / rel_dest
+
+                result = RestoreCopyResult(
+                    candidate_index=index,
+                    source_path=str(source_path),
+                    relative_path=str(rel_dest),
+                    stage_path=str(destination_path),
+                    outcome=RestoreCopyOutcome.SKIPPED_DRY_RUN,
+                    message="dry_run=True",
+                )
+                append_jsonl(results_path, result.to_dict())
+
+            summary = RestoreCopySummary(
+                status="success",
+                planned_files=planned_files,
+                staged_files=0,
+                failed_files=0,
+            )
+            assert summary_path is not None
+            write_json(summary_path, summary.to_dict())
+
         if journal is not None:
             journal.append("stage_build_dry_run", {"result": "no_changes"})
+
         return StageBuildResult(staged_files=0, planned_files=planned_files, stage_root=stage_root)
 
     stage_root.mkdir(parents=True, exist_ok=True)
@@ -183,11 +227,41 @@ def build_restore_stage(
         try:
             _copy_file_atomic(source_path, destination_path)
         except OSError as exc:
+            if results_path is not None:
+                failed = RestoreCopyResult(
+                    candidate_index=index,
+                    source_path=str(source_path),
+                    relative_path=str(rel_dest),
+                    stage_path=str(destination_path),
+                    outcome=RestoreCopyOutcome.FAILED,
+                    message=str(exc),
+                )
+                append_jsonl(results_path, failed.to_dict())
+
+                summary = RestoreCopySummary(
+                    status="failed",
+                    planned_files=planned_files,
+                    staged_files=staged_files,
+                    failed_files=1,
+                )
+                assert summary_path is not None
+                write_json(summary_path, summary.to_dict())
+
             raise RestoreStageError(
                 f"Failed to stage file {source_path} -> {destination_path}"
             ) from exc
 
         staged_files += 1
+
+        if results_path is not None:
+            ok = RestoreCopyResult(
+                candidate_index=index,
+                source_path=str(source_path),
+                relative_path=str(rel_dest),
+                stage_path=str(destination_path),
+                outcome=RestoreCopyOutcome.COPIED,
+            )
+            append_jsonl(results_path, ok.to_dict())
 
         if journal is not None and (
             index == 0 or (index + 1) % 250 == 0 or (index + 1) == planned_files
@@ -203,6 +277,18 @@ def build_restore_stage(
             {"staged_files": staged_files, "planned_files": planned_files},
         )
 
+    if summary_path is not None:
+        summary = RestoreCopySummary(
+            status="success",
+            planned_files=planned_files,
+            staged_files=staged_files,
+            failed_files=0,
+        )
+        assert summary_path is not None
+        write_json(summary_path, summary.to_dict())
+
     return StageBuildResult(
-        staged_files=staged_files, planned_files=planned_files, stage_root=stage_root
+        staged_files=staged_files,
+        planned_files=planned_files,
+        stage_root=stage_root,
     )

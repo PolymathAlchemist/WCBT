@@ -180,6 +180,7 @@ def run_restore(
         stage_root=stage_root,
         dry_run=dry_run,
         journal=journal,
+        artifacts_root=artifacts_root,
     )
 
     verification_result = verify_restore_stage(
