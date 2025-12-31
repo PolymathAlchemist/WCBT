@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from backup_engine.restore.data_models import RestoreMode, RestorePlan, RestoreVerification
-from backup_engine.restore.errors import RestoreArtifactError
+from backup_engine.restore.errors import RestoreConflictError
 from backup_engine.restore.materialize import materialize_restore_candidates
 from backup_engine.restore.service import run_restore
 
@@ -68,7 +68,7 @@ def test_restore_add_only_conflict_fails_with_artifact(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(RestoreArtifactError):
+    with pytest.raises(RestoreConflictError):
         run_restore(
             manifest_path=manifest,
             destination_root=dest,

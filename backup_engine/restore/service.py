@@ -9,7 +9,7 @@ from typing import Any, Mapping
 from backup_engine.manifest_store import read_manifest_json, write_json_atomic
 
 from .data_models import RestoreIntent
-from .errors import RestoreArtifactError, RestoreManifestError
+from .errors import RestoreArtifactError, RestoreConflictError, RestoreManifestError
 from .execute import promote_stage_to_destination
 from .journal import Clock, RestoreExecutionJournal
 from .materialize import materialize_restore_candidates
@@ -43,6 +43,33 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
                 handle.write("\n")
     except OSError as exc:
         raise RestoreArtifactError(f"Failed to write JSONL artifact: {path}") from exc
+
+
+def _write_restore_summary(
+    *,
+    artifacts_root: Path,
+    run_id: str,
+    manifest_path: Path,
+    destination_root: Path,
+    mode: str,
+    verify: str,
+    dry_run: bool,
+    result: str,
+    counts: dict[str, int],
+) -> None:
+    _write_json(
+        artifacts_root / "restore_summary.json",
+        {
+            "run_id": run_id,
+            "manifest_path": str(manifest_path),
+            "destination_root": str(destination_root),
+            "mode": mode,
+            "verify": verify,
+            "dry_run": dry_run,
+            "result": result,  # "ok" | "conflict" | "error"
+            "counts": counts,
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -166,6 +193,14 @@ def run_restore(
     _write_json(restore_plan_path, plan_dict)
     _write_jsonl(restore_candidates_path, [c.to_dict() for c in candidates])
 
+    base_counts: dict[str, int] = {
+        "planned": len(candidates),
+        "conflicts": 0,
+        "staged_files": 0,
+        "failed_files": 0,
+        "verified_files": 0,
+    }
+
     # Enforce add-only conflict policy (artifact-first, fail-fast)
     if intent.mode.value == "add-only":
         conflicting = [c for c in candidates if c.operation_type.value == "skip_existing"]
@@ -194,7 +229,19 @@ def run_restore(
                 },
             )
 
-            raise RestoreArtifactError(
+            _write_restore_summary(
+                artifacts_root=artifacts_root,
+                run_id=run_id,
+                manifest_path=manifest_path,
+                destination_root=destination_root,
+                mode=mode,
+                verify=verify,
+                dry_run=dry_run,
+                result="conflict",
+                counts={**base_counts, "conflicts": len(conflicting)},
+            )
+
+            raise RestoreConflictError(
                 f"Restore conflicts detected in add-only mode: {len(conflicting)} file(s) already exist."
             )
 
@@ -212,59 +259,110 @@ def run_restore(
         / "stage_root"
     )
 
-    stage_result = build_restore_stage(
-        candidates=candidates,
-        stage_root=stage_root,
-        dry_run=dry_run,
-        journal=journal,
-        artifacts_root=artifacts_root,
-    )
+    try:
+        stage_result = build_restore_stage(
+            candidates=candidates,
+            stage_root=stage_root,
+            dry_run=dry_run,
+            journal=journal,
+            artifacts_root=artifacts_root,
+        )
 
-    verification_result = verify_restore_stage(
-        candidates=candidates,
-        stage_root=stage_root,
-        verification_mode=verify,
-        dry_run=dry_run,
-        journal=journal,
-        artifacts_root=artifacts_root,
-    )
+        verification_result = verify_restore_stage(
+            candidates=candidates,
+            stage_root=stage_root,
+            verification_mode=verify,
+            dry_run=dry_run,
+            journal=journal,
+            artifacts_root=artifacts_root,
+        )
 
-    journal.append(
-        "restore_stage_verified",
-        {
-            "verification_mode": verification_result.verification_mode,
-            "planned_files": verification_result.planned_files,
-            "verified_files": verification_result.verified_files,
-            "staged_files": stage_result.staged_files,
-        },
-    )
-
-    if dry_run:
         journal.append(
-            "restore_promotion_skipped",
+            "restore_stage_verified",
             {
-                "reason": "dry_run",
-                "destination_root": str(destination_root),
-                "stage_root": str(stage_root),
+                "verification_mode": verification_result.verification_mode,
+                "planned_files": verification_result.planned_files,
+                "verified_files": verification_result.verified_files,
+                "staged_files": stage_result.staged_files,
             },
         )
-        return
 
-    # Important: do not write to the journal after promotion, because promotion
-    # atomically replaces/renames destination_root, and this journal lives under it.
-    journal.append(
-        "restore_promotion_started",
-        {
-            "destination_root": str(destination_root),
-            "stage_root": str(stage_root),
-            "run_id": str(plan.run_id),
-        },
-    )
+        if dry_run:
+            journal.append(
+                "restore_promotion_skipped",
+                {
+                    "reason": "dry_run",
+                    "destination_root": str(destination_root),
+                    "stage_root": str(stage_root),
+                },
+            )
 
-    promote_stage_to_destination(
-        stage_root=stage_root,
-        destination_root=destination_root,
-        run_id=str(plan.run_id),
-        dry_run=False,
-        journal=None,
-    )
+            _write_restore_summary(
+                artifacts_root=artifacts_root,
+                run_id=run_id,
+                manifest_path=manifest_path,
+                destination_root=destination_root,
+                mode=mode,
+                verify=verify,
+                dry_run=True,
+                result="ok",
+                counts={
+                    **base_counts,
+                    "staged_files": int(stage_result.staged_files),
+                    "failed_files": int(getattr(stage_result, "failed_files", 0)),
+                    "verified_files": int(verification_result.verified_files),
+                },
+            )
+            return
+
+        _write_restore_summary(
+            artifacts_root=artifacts_root,
+            run_id=run_id,
+            manifest_path=manifest_path,
+            destination_root=destination_root,
+            mode=mode,
+            verify=verify,
+            dry_run=False,
+            result="ok",
+            counts={
+                **base_counts,
+                "staged_files": int(stage_result.staged_files),
+                "failed_files": int(getattr(stage_result, "failed_files", 0)),
+                "verified_files": int(verification_result.verified_files),
+            },
+        )
+
+        journal.append(
+            "restore_promotion_started",
+            {
+                "destination_root": str(destination_root),
+                "stage_root": str(stage_root),
+                "run_id": str(plan.run_id),
+            },
+        )
+
+        promote_stage_to_destination(
+            stage_root=stage_root,
+            destination_root=destination_root,
+            run_id=str(plan.run_id),
+            dry_run=False,
+            journal=None,
+        )
+
+    except Exception:  # noqa: BLE001
+        # Best-effort: record an error summary, then re-raise.
+        try:
+            _write_restore_summary(
+                artifacts_root=artifacts_root,
+                run_id=run_id,
+                manifest_path=manifest_path,
+                destination_root=destination_root,
+                mode=mode,
+                verify=verify,
+                dry_run=dry_run,
+                result="error",
+                counts=base_counts,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        raise
