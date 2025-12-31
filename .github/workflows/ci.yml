@@ -23,14 +23,22 @@ jobs:
       - name: Sync
         run: uv sync --dev
 
+      - name: Debug (post-sync)
+        shell: pwsh
+        run: |
+          uv --version
+          uv run python -c "import sys; print(sys.executable)"
+          uv run python -c "import shutil; print('ruff path:', shutil.which('ruff'))"
+          uv run python -m pip show ruff
+
       - name: Audit
         run: uv run pip-audit
 
       - name: Ruff
-        run: uv run ruff check .
+        run: uv tool run ruff check .
 
       - name: Format check
-        run: uv run ruff format --check .
+        run: uv tool run ruff format --check .
 
       - name: Mypy
         run: uv run mypy .
