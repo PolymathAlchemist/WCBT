@@ -74,6 +74,14 @@ def test_restore_dry_run_writes_artifacts(tmp_path: Path) -> None:
     assert (artifacts_root / "restore_candidates.jsonl").is_file()
     assert (artifacts_root / "execution_journal.jsonl").is_file()
 
+    # Stage build is skipped, but summary artifacts still document the dry-run.
+    assert (artifacts_root / "stage_copy_summary.json").is_file()
+    assert not (artifacts_root / "stage_copy_results.jsonl").exists()
+
+    # Verification is skipped, but a summary artifact documents the decision.
+    assert (artifacts_root / "stage_verify_summary.json").is_file()
+    assert not (artifacts_root / "stage_verify_results.jsonl").exists()
+
     # The plan JSON should be valid JSON and include a run_id.
     plan_payload = json.loads((artifacts_root / "restore_plan.json").read_text(encoding="utf-8"))
     assert isinstance(plan_payload, dict)
