@@ -3,7 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from backup_engine.restore.service import run_restore
+from backup_engine.restore.materialize import materialize_restore_candidates
+from backup_engine.restore.plan import (
+    build_restore_plan,
+    parse_restore_mode,
+    parse_restore_verification,
+)
+from backup_engine.restore.service import RestoreIntent, run_restore
 
 
 def _write_run_manifest(path: Path, archive_root: Path) -> None:
@@ -92,20 +98,26 @@ def test_restore_materialize_marks_existing_as_skip_in_add_only(tmp_path: Path) 
     (dest_root / "nested").mkdir(parents=True, exist_ok=True)
     (dest_root / "nested" / "b.txt").write_text("existing", encoding="utf-8")
 
-    run_restore(
+    # Materialization-only behavior: SKIP_EXISTING is planned
+    intent = RestoreIntent(
         manifest_path=manifest_path,
         destination_root=dest_root,
-        mode="add-only",
-        verify="size",
-        dry_run=True,
-        data_root=None,
+        mode=parse_restore_mode("add-only"),
+        verification=parse_restore_verification("size"),
     )
 
-    artifacts_root = dest_root / ".wcbt_restore" / "20251229_035431Z"
-    restore_candidates_path = artifacts_root / "restore_candidates.jsonl"
-    lines = restore_candidates_path.read_text(encoding="utf-8").splitlines()
-    c1 = json.loads(lines[1])
-    assert c1["operation_type"] == "skip_existing"
+    plan = build_restore_plan(intent)
+
+    object.__setattr__(
+        plan,
+        "source_manifest",
+        {**plan.source_manifest, "_operations_full": [{"relative_path": "nested/b.txt"}]},
+    )
+
+    candidates = materialize_restore_candidates(plan)
+
+    assert len(candidates) == 1
+    assert candidates[0].operation_type.value == "skip_existing"
 
 
 def test_restore_materialize_marks_existing_as_overwrite_in_overwrite_mode(tmp_path: Path) -> None:

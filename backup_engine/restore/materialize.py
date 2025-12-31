@@ -89,7 +89,7 @@ def materialize_restore_candidates(plan: RestorePlan) -> list[RestoreCandidate]:
                 reason = "Destination exists; overwrite mode plans an overwrite."
         else:
             operation_type = RestoreOperationType.COPY_NEW
-            reason = "Destination missing; planned as a new restore copy."
+            reason = "Destination does not exist; normal copy."
 
         candidates.append(
             RestoreCandidate(

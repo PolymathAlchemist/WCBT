@@ -25,3 +25,7 @@ class RestoreMaterializationError(RestoreError):
 
 class RestoreIntentError(RestoreError):
     """Raised when restore intent is invalid (e.g., destination root problems)."""
+
+
+class RestoreConflictError(RestoreError):
+    """Raised when restore conflicts with existing destination content under add-only mode."""

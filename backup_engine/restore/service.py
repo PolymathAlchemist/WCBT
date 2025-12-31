@@ -17,6 +17,11 @@ from .plan import build_restore_plan, parse_restore_mode, parse_restore_verifica
 from .stage import build_restore_stage
 from .verify import verify_restore_stage
 
+__all__ = [
+    "run_restore",
+    "RestoreIntent",
+]
+
 
 def _restore_artifacts_root(destination_root: Path, run_id: str) -> Path:
     return destination_root / ".wcbt_restore" / run_id
@@ -160,6 +165,38 @@ def run_restore(
 
     _write_json(restore_plan_path, plan_dict)
     _write_jsonl(restore_candidates_path, [c.to_dict() for c in candidates])
+
+    # Enforce add-only conflict policy (artifact-first, fail-fast)
+    if intent.mode.value == "add-only":
+        conflicting = [c for c in candidates if c.operation_type.value == "skip_existing"]
+
+        if conflicting:
+            conflicts_path = artifacts_root / "restore_conflicts.jsonl"
+
+            _write_jsonl(
+                conflicts_path,
+                [
+                    {
+                        "operation_index": c.operation_index,
+                        "relative_path": c.relative_path,
+                        "destination_path": str(c.destination_path),
+                        "reason": c.reason,
+                    }
+                    for c in conflicting
+                ],
+            )
+
+            journal.append(
+                "restore_conflicts_detected",
+                {
+                    "conflicts_count": len(conflicting),
+                    "conflicts_path": str(conflicts_path),
+                },
+            )
+
+            raise RestoreArtifactError(
+                f"Restore conflicts detected in add-only mode: {len(conflicting)} file(s) already exist."
+            )
 
     journal.append(
         "restore_artifacts_written",
