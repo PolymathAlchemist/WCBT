@@ -22,15 +22,19 @@ from backup_engine.backup.service import run_backup
 from backup_engine.errors import WcbtError
 from backup_engine.init_profile import init_profile, profile_paths_as_text
 from backup_engine.paths_and_safety import SafetyViolationError
+from backup_engine.restore.errors import RestoreConflictError
 from backup_engine.restore.service import run_restore
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wcbt", description="World Chronicle Backup Tool (WCBT)")
+
     sub = parser.add_subparsers(dest="command", required=True)
 
     init_p = sub.add_parser("init-profile", help="Initialize a profile directory structure.")
+
     init_p.add_argument("--profile", required=True, help="Profile name.")
+
     init_p.add_argument(
         "--data-root", default=None, help="Override WCBT data root (primarily for testing)."
     )
@@ -39,8 +43,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     backup_p = sub.add_parser("backup", help="Plan or execute a backup run.")
+
     backup_p.add_argument("--profile", required=True, help="Profile name.")
+
     backup_p.add_argument("--source", required=True, type=Path, help="Source directory to back up.")
+
     backup_p.add_argument(
         "--data-root",
         default=None,
@@ -71,6 +78,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     mode = backup_p.add_mutually_exclusive_group(required=False)
+
     mode.add_argument(
         "--dry-run",
         action="store_true",
@@ -116,10 +124,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     verify_p = sub.add_parser("verify", help="Verify a materialized run by hashing archived files.")
+
     verify_p.add_argument("--profile", required=True, help="Profile name.")
+
     verify_p.add_argument(
         "--run-id", required=True, help="Run ID to verify (directory name under archives root)."
     )
+
     verify_p.add_argument(
         "--data-root",
         default=None,
@@ -248,13 +259,15 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 data_root=data_root,
             )
-        except (SafetyViolationError, WcbtError, ValueError) as exc:
+        except RestoreConflictError as exc:
             print(f"ERROR: {exc}")
             return 2
+        except (SafetyViolationError, WcbtError, ValueError) as exc:
+            print(f"ERROR: {exc}")
+            return 1
         return 0
 
-    parser.print_help()
-    return 0
+    raise AssertionError(f"Unhandled command: {args.command!r}")
 
 
 if __name__ == "__main__":
