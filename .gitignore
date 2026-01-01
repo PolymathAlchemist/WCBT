@@ -23,6 +23,7 @@ Desktop.ini
 
 # ---- Logs ----
 *.log
+cloc-by-file.txt
 
 # ---- Backup run artifacts (WCBT) ----
 **/plan.txt
