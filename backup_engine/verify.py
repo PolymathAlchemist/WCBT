@@ -24,10 +24,14 @@ import hashlib
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from backup_engine.errors import WcbtError
-from backup_engine.manifest_store import read_manifest_json, write_manifest_json_atomic
+from backup_engine.manifest_store import (
+    read_manifest_json,
+    write_json_atomic,
+    write_manifest_json_atomic,
+)
 from backup_engine.paths_and_safety import resolve_profile_paths
 from backup_engine.profile_lock import acquire_profile_lock, build_profile_lock_path
 
@@ -48,6 +52,17 @@ class VerificationOutcome(str, Enum):
     VERIFIED = "verified"
     FAILED = "failed"
     NOT_APPLICABLE = "not_applicable"
+
+
+class _VerifyCounts(Protocol):
+    @property
+    def verified(self) -> int: ...
+
+    @property
+    def failed(self) -> int: ...
+
+    @property
+    def not_applicable(self) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +165,14 @@ def verify_run(
         )
 
         write_manifest_json_atomic(manifest_path, updated_manifest)
+
+        # Write verify report artifacts (always, even on success)
+        _write_verify_report(
+            run_root,
+            run_id=run_id,
+            algorithm=HashAlgorithm.SHA256.value,
+            counts=counts,
+        )
 
         if counts.failed > 0:
             raise VerifyError(
@@ -381,3 +404,46 @@ def _write_verification_fields(
         "size_bytes": size_bytes,
         "error": error,
     }
+
+
+def _write_verify_report(
+    run_root: Path,
+    *,
+    run_id: str,
+    algorithm: str,
+    counts: _VerifyCounts,
+) -> None:
+    """
+    Write verify artifacts for an archive run.
+
+    Parameters
+    ----------
+    run_root:
+        Root directory of the run under archives_root.
+    run_id:
+        Run identifier (directory name).
+    algorithm:
+        Hash algorithm name.
+    counts:
+        Aggregate verification counts.
+    """
+    verify_report: dict[str, Any] = {
+        "schema": "wcbt_verify_report_v1",
+        "run_id": run_id,
+        "algorithm": algorithm,
+        "verified": counts.verified,
+        "failed": counts.failed,
+        "not_applicable": counts.not_applicable,
+    }
+    write_json_atomic(run_root / "verify_report.json", verify_report)
+
+    summary_lines = [
+        "WCBT Verify Report",
+        f"Run ID        : {run_id}",
+        f"Algorithm     : {algorithm}",
+        f"Verified      : {counts.verified}",
+        f"Failed        : {counts.failed}",
+        f"Not applicable: {counts.not_applicable}",
+        "",
+    ]
+    (run_root / "verify_summary.txt").write_text("\n".join(summary_lines), encoding="utf-8")
