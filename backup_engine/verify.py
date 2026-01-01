@@ -21,6 +21,7 @@ Design notes
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -159,7 +160,8 @@ def verify_run(
         manifest_path = run_root / "manifest.json"
         manifest = read_manifest_json(manifest_path)
 
-        updated_manifest, counts = _verify_manifest(
+        updated_manifest, counts, records = _verify_manifest(
+            run_root=run_root,
             manifest=manifest,
             hash_algorithm=HashAlgorithm.SHA256,
         )
@@ -172,6 +174,7 @@ def verify_run(
             run_id=run_id,
             algorithm=HashAlgorithm.SHA256.value,
             counts=counts,
+            records=records,
         )
 
         if counts.failed > 0:
@@ -192,9 +195,10 @@ def verify_run(
 
 def _verify_manifest(
     *,
+    run_root: Path,
     manifest: Mapping[str, Any],
     hash_algorithm: HashAlgorithm,
-) -> tuple[dict[str, Any], VerificationCounts]:
+) -> tuple[dict[str, Any], VerificationCounts, list[dict[str, Any]]]:
     """
     Verify a manifest's copied file outcomes and return an updated manifest.
 
@@ -227,6 +231,8 @@ def _verify_manifest(
     verified = 0
     failed = 0
     not_applicable = 0
+
+    records: list[dict[str, Any]] = []
 
     for i, op in enumerate(operations):
         if not isinstance(op, dict):
@@ -262,6 +268,16 @@ def _verify_manifest(
             continue
 
         dest_path = Path(destination_path)
+        if not dest_path.is_absolute():
+            dest_path = run_root / dest_path
+
+        rel_path: str
+        try:
+            rel_path = str(dest_path.relative_to(run_root))
+        except ValueError:
+            # Fall back to the raw string if it isn't under run_root
+            rel_path = str(Path(destination_path))
+
         try:
             if not dest_path.exists():
                 raise FileNotFoundError(str(dest_path))
@@ -269,6 +285,14 @@ def _verify_manifest(
             digest_hex = compute_digest(dest_path, hash_algorithm)
         except OSError as exc:
             failed += 1
+            records.append(
+                {
+                    "schema": "wcbt_verify_record_v1",
+                    "run_id": str(payload.get("run_id", "")),
+                    "status": "missing",
+                    "path": rel_path,
+                }
+            )
             _write_verification_fields(
                 exec_result,
                 outcome=VerificationOutcome.FAILED,
@@ -278,6 +302,24 @@ def _verify_manifest(
                 error=f"{type(exc).__name__}: {exc}",
             )
             continue
+
+        verified += 1
+        records.append(
+            {
+                "schema": "wcbt_verify_record_v1",
+                "run_id": str(payload.get("run_id", "")),
+                "status": "ok",
+                "path": rel_path,
+            }
+        )
+        _write_verification_fields(
+            exec_result,
+            outcome=VerificationOutcome.VERIFIED,
+            algorithm=hash_algorithm,
+            digest_hex=digest_hex,
+            size_bytes=size_bytes,
+            error=None,
+        )
 
         verified += 1
         _write_verification_fields(
@@ -299,8 +341,13 @@ def _verify_manifest(
         "total_verifiable_count": verified + failed,
     }
 
-    counts = VerificationCounts(verified=verified, failed=failed, not_applicable=not_applicable)
-    return payload, counts
+    counts = VerificationCounts(
+        verified=verified,
+        failed=failed,
+        not_applicable=not_applicable,
+    )
+
+    return payload, counts, records
 
 
 def _index_execution_results(execution: Any) -> dict[int, dict[str, Any]]:
@@ -412,6 +459,7 @@ def _write_verify_report(
     run_id: str,
     algorithm: str,
     counts: _VerifyCounts,
+    records: list[dict[str, Any]],
 ) -> None:
     """
     Write verify artifacts for an archive run.
@@ -427,7 +475,7 @@ def _write_verify_report(
     counts:
         Aggregate verification counts.
     """
-    verify_report: dict[str, Any] = {
+    verify_report = {
         "schema": "wcbt_verify_report_v1",
         "run_id": run_id,
         "algorithm": algorithm,
@@ -435,7 +483,13 @@ def _write_verify_report(
         "failed": counts.failed,
         "not_applicable": counts.not_applicable,
     }
+
     write_json_atomic(run_root / "verify_report.json", verify_report)
+
+    jsonl_path = run_root / "verify_report.jsonl"
+    with jsonl_path.open("w", encoding="utf-8") as fh:
+        for record in records:
+            fh.write(json.dumps(record) + "\n")
 
     summary_lines = [
         "WCBT Verify Report",
@@ -446,4 +500,7 @@ def _write_verify_report(
         f"Not applicable: {counts.not_applicable}",
         "",
     ]
-    (run_root / "verify_summary.txt").write_text("\n".join(summary_lines), encoding="utf-8")
+    (run_root / "verify_summary.txt").write_text(
+        "\n".join(summary_lines),
+        encoding="utf-8",
+    )
