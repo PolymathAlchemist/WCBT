@@ -44,6 +44,14 @@ class RestoreCopyResult:
     message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        Convert the copy result into a JSON-serializable dictionary.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary representation with ``outcome`` stored as its string value.
+        """
         payload = asdict(self)
         payload["outcome"] = self.outcome.value
         return payload
@@ -72,11 +80,40 @@ class RestoreCopySummary:
     failed_files: int
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        Convert the summary into a JSON-serializable dictionary.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary representation of the summary.
+        """
         return asdict(self)
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    """Append one JSON object as a single line to a JSONL file."""
+    """
+    Append one JSON object as a single line to a JSONL file.
+
+    Parameters
+    ----------
+    path:
+        Destination JSONL path. Parent directories are created if needed.
+    payload:
+        JSON-serializable object to append as one line.
+
+    Returns
+    -------
+    None
+        This function returns None.
+
+    Raises
+    ------
+    OSError
+        If the file cannot be created or written.
+    TypeError
+        If ``payload`` contains values that are not JSON serializable.
+    """
     line = json.dumps(payload, ensure_ascii=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -85,7 +122,31 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Write JSON with stable UTF-8 encoding."""
+    """
+    Write a JSON file with stable UTF-8 encoding.
+
+    The output is written with ``ensure_ascii=False`` and ``indent=2`` for readability.
+    Parent directories are created if needed.
+
+    Parameters
+    ----------
+    path:
+        Destination JSON path. Parent directories are created if needed.
+    payload:
+        JSON-serializable object to write.
+
+    Returns
+    -------
+    None
+        This function returns None.
+
+    Raises
+    ------
+    OSError
+        If the file cannot be created or written.
+    TypeError
+        If ``payload`` contains values that are not JSON serializable.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     path.write_text(text, encoding="utf-8")
