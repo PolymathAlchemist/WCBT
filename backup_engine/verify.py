@@ -79,6 +79,20 @@ class VerificationCounts:
         return self.verified + self.failed
 
 
+@dataclass(frozen=True, slots=True)
+class VerificationStatusCounts:
+    """Deterministic counts by emitted verify status."""
+
+    ok: int
+    missing: int
+    unreadable: int
+    hash_mismatch: int
+
+    @property
+    def total(self) -> int:
+        return self.ok + self.missing + self.unreadable + self.hash_mismatch
+
+
 def compute_digest(file_path: Path, algorithm: HashAlgorithm) -> str:
     """
     Compute a file digest.
@@ -160,7 +174,7 @@ def verify_run(
         manifest_path = run_root / "manifest.json"
         manifest = read_manifest_json(manifest_path)
 
-        updated_manifest, counts, records = _verify_manifest(
+        updated_manifest, counts, status_counts, records = _verify_manifest(
             run_root=run_root,
             manifest=manifest,
             hash_algorithm=HashAlgorithm.SHA256,
@@ -174,6 +188,7 @@ def verify_run(
             run_id=run_id,
             algorithm=HashAlgorithm.SHA256.value,
             counts=counts,
+            status_counts=status_counts,
             records=records,
         )
 
@@ -198,7 +213,7 @@ def _verify_manifest(
     run_root: Path,
     manifest: Mapping[str, Any],
     hash_algorithm: HashAlgorithm,
-) -> tuple[dict[str, Any], VerificationCounts, list[dict[str, Any]]]:
+) -> tuple[dict[str, Any], VerificationCounts, VerificationStatusCounts, list[dict[str, Any]]]:
     """
     Verify a manifest's copied file outcomes and return an updated manifest.
 
@@ -233,6 +248,11 @@ def _verify_manifest(
     not_applicable = 0
 
     records: list[dict[str, Any]] = []
+
+    status_ok = 0
+    status_missing = 0
+    status_unreadable = 0
+    status_hash_mismatch = 0
 
     for i, op in enumerate(operations):
         if not isinstance(op, dict):
@@ -280,6 +300,7 @@ def _verify_manifest(
 
         if not dest_path.exists():
             failed += 1
+            status_missing += 1
             records.append(
                 {
                     "schema": "wcbt_verify_record_v1",
@@ -303,6 +324,7 @@ def _verify_manifest(
             digest_hex = compute_digest(dest_path, hash_algorithm)
         except OSError as exc:
             failed += 1
+            status_unreadable += 1
             records.append(
                 {
                     "schema": "wcbt_verify_record_v1",
@@ -325,6 +347,7 @@ def _verify_manifest(
 
         if expected_digest is not None and digest_hex != expected_digest:
             failed += 1
+            status_hash_mismatch += 1
             records.append(
                 {
                     "schema": "wcbt_verify_record_v1",
@@ -344,6 +367,7 @@ def _verify_manifest(
             continue
 
         verified += 1
+        status_ok += 1
         records.append(
             {
                 "schema": "wcbt_verify_record_v1",
@@ -377,7 +401,14 @@ def _verify_manifest(
         not_applicable=not_applicable,
     )
 
-    return payload, counts, records
+    status_counts = VerificationStatusCounts(
+        ok=status_ok,
+        missing=status_missing,
+        unreadable=status_unreadable,
+        hash_mismatch=status_hash_mismatch,
+    )
+
+    return payload, counts, status_counts, records
 
 
 def _index_execution_results(execution: Any) -> dict[int, dict[str, Any]]:
@@ -521,6 +552,7 @@ def _write_verify_report(
     run_id: str,
     algorithm: str,
     counts: _VerifyCounts,
+    status_counts: VerificationStatusCounts,
     records: list[dict[str, Any]],
 ) -> None:
     """
@@ -544,6 +576,12 @@ def _write_verify_report(
         "verified": counts.verified,
         "failed": counts.failed,
         "not_applicable": counts.not_applicable,
+        "status_counts": {
+            "ok": status_counts.ok,
+            "missing": status_counts.missing,
+            "unreadable": status_counts.unreadable,
+            "hash_mismatch": status_counts.hash_mismatch,
+        },
     }
 
     write_json_atomic(run_root / "verify_report.json", verify_report)
@@ -561,6 +599,11 @@ def _write_verify_report(
         f"Failed        : {counts.failed}",
         f"Not applicable: {counts.not_applicable}",
         "",
+        "Status counts:",
+        f"  ok           : {status_counts.ok}",
+        f"  missing      : {status_counts.missing}",
+        f"  unreadable   : {status_counts.unreadable}",
+        f"  hash_mismatch: {status_counts.hash_mismatch}",
     ]
     (run_root / "verify_summary.txt").write_text(
         "\n".join(summary_lines),
