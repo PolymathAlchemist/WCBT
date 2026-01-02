@@ -202,6 +202,23 @@ def write_manifest_json_atomic(manifest_path: Path, payload: Mapping[str, Any]) 
 def read_manifest(manifest_path: Path) -> BackupManifest:
     """
     Read and validate a BackupManifest from disk.
+
+    Parameters
+    ----------
+    manifest_path:
+        Path to a manifest JSON file.
+
+    Returns
+    -------
+    BackupManifest
+        Validated manifest model.
+
+    Raises
+    ------
+    ManifestIOError
+        If the file cannot be read or parsed.
+    ManifestValidationError
+        If the parsed payload fails schema validation.
     """
     try:
         text = manifest_path.read_text(encoding="utf-8")
@@ -225,6 +242,26 @@ def write_json_atomic(
 ) -> None:
     """
     Write JSON atomically to disk.
+
+    Parameters
+    ----------
+    json_path:
+        Target JSON file path.
+    payload:
+        JSON-serializable mapping to persist.
+    options:
+        Serialization options (indentation, key ordering, ASCII handling).
+
+    Notes
+    -----
+    - Uses a temp file followed by an atomic replace to preserve invariants.
+    - Creates parent directories as needed.
+    - Writes LF newlines for deterministic artifacts across platforms.
+
+    Raises
+    ------
+    ManifestIOError
+        If the payload cannot be written.
     """
     opts = options or ManifestWriteOptions()
     json_path = json_path.expanduser()
@@ -268,7 +305,25 @@ def write_manifest_atomic(
     *,
     options: ManifestWriteOptions | None = None,
 ) -> None:
-    """Atomically write a validated BackupManifest to disk."""
+    """
+    Atomically write a validated BackupManifest to disk.
+
+    Parameters
+    ----------
+    manifest_path:
+        Target manifest file path.
+    manifest:
+        Manifest model to validate and persist.
+    options:
+        Serialization options.
+
+    Raises
+    ------
+    ManifestValidationError
+        If the manifest fails validation.
+    ManifestIOError
+        If the manifest cannot be written.
+    """
     manifest.validate()
     write_json_atomic(manifest_path, manifest.to_dict(), options=options)
 
@@ -279,19 +334,66 @@ def write_run_manifest_atomic(
     *,
     options: ManifestWriteOptions | None = None,
 ) -> None:
-    """Atomically write a run manifest to disk."""
+    """
+    Atomically write a run manifest to disk.
+
+    Parameters
+    ----------
+    manifest_path:
+        Target manifest file path.
+    manifest:
+        Run manifest model that can serialize to a JSON dictionary.
+    options:
+        Serialization options.
+
+    Raises
+    ------
+    ManifestIOError
+        If the manifest cannot be written.
+    """
     write_json_atomic(manifest_path, manifest.to_dict(), options=options)
 
 
 def iter_manifest_paths(manifest_root: Path) -> Iterator[Path]:
-    """Yield manifest file paths under a directory tree."""
+    """
+    Yield JSON file paths under a directory tree.
+
+    Parameters
+    ----------
+    manifest_root:
+        Root directory to scan.
+
+    Yields
+    ------
+    pathlib.Path
+        Paths to files matching `*.json`.
+    """
     for path in manifest_root.rglob("*.json"):
         if path.is_file():
             yield path
 
 
 def load_all_manifests(manifest_root: Path) -> list[BackupManifest]:
-    """Load all backup manifests under a manifest root."""
+    """
+    Load and validate all BackupManifest files under a root directory.
+
+    Parameters
+    ----------
+    manifest_root:
+        Root directory to scan.
+
+    Returns
+    -------
+    list[BackupManifest]
+        Validated manifests.
+
+    Raises
+    ------
+    ManifestIOError
+        If a manifest cannot be read or parsed.
+    ManifestValidationError
+        If a manifest fails validation.
+    """
     manifests: list[BackupManifest] = []
     for path in iter_manifest_paths(manifest_root):
         manifests.append(read_manifest(path))

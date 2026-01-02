@@ -62,11 +62,22 @@ class SafetyViolationError(RuntimeError):
 
 def default_data_root() -> Path:
     """
-    Resolve the default WCBT data root on Windows.
+    Resolve the default WCBT data root from environment variables.
 
-    Preference order:
-    1) %LOCALAPPDATA% if set
-    2) %APPDATA% (Roaming) as fallback
+    Preference order
+    ---------------
+    1) LOCALAPPDATA (if set)
+    2) APPDATA (Roaming) as fallback
+
+    Returns
+    -------
+    pathlib.Path
+        Default data root path.
+
+    Raises
+    ------
+    SafetyViolationError
+        If neither LOCALAPPDATA nor APPDATA is set.
     """
     local = os.environ.get("LOCALAPPDATA")
     if local:
@@ -142,7 +153,8 @@ def ensure_profile_directories(paths: ProfilePaths) -> None:
 
     Notes
     -----
-    This function creates directories only. It performs no deletion.
+    This function creates directories only. It performs no deletion to preserve
+    the safety posture of v1.
     """
     for directory in (
         paths.profile_root,
@@ -194,7 +206,25 @@ def validate_restore_target(server_root: Path, world_folder: str) -> Path:
 
 
 def _assert_within(base: Path, candidate: Path, purpose: str) -> None:
-    """Ensure candidate is within base after resolution."""
+    """
+    Enforce that a resolved candidate path stays within a resolved base path.
+
+    Parameters
+    ----------
+    base:
+        Resolved base directory path.
+    candidate:
+        Resolved candidate path that must remain within `base`.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    SafetyViolationError
+        If `candidate` is not contained within `base`.
+    """
     try:
         candidate.relative_to(base)
     except ValueError as exc:
@@ -204,7 +234,27 @@ def _assert_within(base: Path, candidate: Path, purpose: str) -> None:
 
 
 def _assert_min_depth(path: Path, min_parts: int, purpose: str) -> None:
-    """Block obviously dangerous shallow targets like C:\\ or D:\\."""
+    """
+    Enforce a minimum path depth to avoid dangerously shallow targets.
+
+    Parameters
+    ----------
+    path:
+        Resolved path to validate.
+    min_parts:
+        Minimum number of path components required.
+    label:
+        Human-readable label used in error messages.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    SafetyViolationError
+        If the path is shallower than `min_parts`.
+    """
     parts = path.resolve().parts
     if len(parts) < min_parts:
         raise SafetyViolationError(
@@ -238,27 +288,29 @@ def _assert_not_system_path(path: Path) -> None:
 
 
 def validate_source_path(source: Path) -> Path:
-    """Validate a backup source path and return its resolved absolute form.
-
-    Safety goals:
-    - Must exist and be a directory
-    - Disallow filesystem roots (C:\\, D:\\, etc.) by default
-    - Normalize to an absolute resolved path
+    """
+    Validate a backup source directory and return its resolved absolute form.
 
     Parameters
     ----------
     source:
-        Candidate source directory.
+        Candidate source directory path.
 
     Returns
     -------
     pathlib.Path
-        Resolved absolute source directory.
+        Absolute, resolved source path.
 
     Raises
     ------
     SafetyViolationError
-        If the source path does not exist, is not a directory, or is unsafe.
+        If the path does not exist, is not a directory, is too shallow to be safe,
+        or violates other safety constraints.
+
+    Notes
+    -----
+    This validation is intentionally strict to reduce the risk of selecting unsafe
+    filesystem targets.
     """
     source = Path(source).expanduser()
 

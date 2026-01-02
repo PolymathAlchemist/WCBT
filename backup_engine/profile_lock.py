@@ -102,7 +102,7 @@ def acquire_profile_lock(
     break_lock: bool,
 ) -> Iterator[None]:
     """
-    Acquire a profile lock for materialize/execute phases.
+    Acquire a profile lock for commands that must not run concurrently per profile.
 
     Parameters
     ----------
@@ -191,7 +191,7 @@ def _release_lock(lock_path: Path, info: ProfileLockInfo) -> None:
     -----
     This is a best-effort safety check: we read the file and confirm PID/hostname
     before unlinking. If the lock content is unreadable, we still attempt to remove
-    it since we are in the releasing process.
+    it to avoid leaving a dead lock behind after successful command completion.
     """
     try:
         existing = _try_read_lock(lock_path)
@@ -301,6 +301,10 @@ def is_pid_running(pid: int) -> bool | None:
     -------
     bool | None
         True if running, False if not running, None if indeterminate or unsupported.
+
+    Raises
+    ------
+    None
     """
     if os.name != "nt":
         return None
@@ -320,6 +324,11 @@ def _is_pid_running_windows(pid: int) -> bool | None:
     -------
     bool | None
         True if running, False if not running, None if indeterminate (e.g., access denied).
+
+    Notes
+    -----
+    This function is intentionally conservative. If the process state cannot be
+    determined (for example, access denied), it returns None rather than guessing.
     """
     import ctypes
     from ctypes import wintypes
