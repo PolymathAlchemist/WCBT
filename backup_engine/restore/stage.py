@@ -42,6 +42,19 @@ class StageBuildResult:
 
 
 def _coerce_path(value: Any) -> Optional[Path]:
+    """
+    Coerce a candidate value into a Path when possible.
+
+    Parameters
+    ----------
+    value:
+        Candidate value. Supported: ``pathlib.Path``, ``str``, or None.
+
+    Returns
+    -------
+    pathlib.Path | None
+        Path if coercible, otherwise None.
+    """
     if value is None:
         return None
     if isinstance(value, Path):
@@ -53,14 +66,25 @@ def _coerce_path(value: Any) -> Optional[Path]:
 
 def _extract_candidate_paths(candidate_dict: Mapping[str, Any]) -> tuple[Path, Path]:
     """
-    Extract (source_path, relative_destination_path) from a candidate mapping.
+    Extract the (source_path, relative_destination_path) from a candidate mapping.
 
-    This intentionally tolerates a few key variants to avoid tight coupling.
+    This helper tolerates a small set of key variants to avoid tight coupling between
+    restore materialization and staging.
+
+    Parameters
+    ----------
+    candidate_dict:
+        Candidate mapping.
+
+    Returns
+    -------
+    tuple[pathlib.Path, pathlib.Path]
+        Pair of (source_path, relative_destination_path).
 
     Raises
     ------
     RestoreStageError
-        If required fields cannot be found or destination is not relative.
+        If required fields are missing or if the destination path is absolute.
     """
     source_keys = ("source_path", "source", "src", "archive_path")
     dest_keys = ("relative_path", "destination_relative_path", "relpath", "dest_relpath")
@@ -95,9 +119,21 @@ def _copy_file_atomic(source_path: Path, destination_path: Path) -> None:
     """
     Copy a file to destination atomically by writing to a temp file then renaming.
 
+    Parameters
+    ----------
+    source_path:
+        Existing file to copy.
+    destination_path:
+        Target file path. Parent directories are created if needed.
+
+    Raises
+    ------
+    OSError
+        If the copy, fsync, or rename fails.
+
     Notes
     -----
-    - This is restart-friendly: if the temp file exists it is replaced.
+    - Restart-friendly: if the temp file exists it is replaced.
     - Rename is atomic within the same directory.
     """
     destination_path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,6 +151,24 @@ def _copy_file_atomic(source_path: Path, destination_path: Path) -> None:
 
 
 def _candidate_to_dict(candidate: Any) -> Mapping[str, Any]:
+    """
+    Normalize a restore candidate to a mapping.
+
+    Parameters
+    ----------
+    candidate:
+        Candidate object. May be a mapping or an object providing ``to_dict()``.
+
+    Returns
+    -------
+    collections.abc.Mapping[str, Any]
+        Candidate mapping.
+
+    Raises
+    ------
+    RestoreStageError
+        If the candidate cannot be converted into a mapping.
+    """
     if hasattr(candidate, "to_dict") and callable(candidate.to_dict):
         result = candidate.to_dict()
         if isinstance(result, Mapping):
@@ -152,8 +206,8 @@ def build_restore_stage(
     artifacts_root:
         Optional directory to write stage copy execution artifacts. If provided, this
         function writes:
-        - stage_copy_results.jsonl
-        - stage_copy_summary.json
+        - ``stage_copy_results.jsonl``
+        - ``stage_copy_summary.json``
 
     Returns
     -------
