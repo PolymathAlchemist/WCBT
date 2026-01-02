@@ -52,6 +52,14 @@ class RestoreVerifyResult:
     message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        Convert the result into a JSON-serializable dictionary.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary representation with ``outcome`` stored as its string value.
+        """
         payload = asdict(self)
         payload["outcome"] = self.outcome.value
         return payload
@@ -83,6 +91,14 @@ class RestoreVerifySummary:
     failed_files: int
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        Convert the summary into a JSON-serializable dictionary.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary representation of the summary.
+        """
         return asdict(self)
 
 
