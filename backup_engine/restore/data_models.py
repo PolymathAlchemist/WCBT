@@ -7,21 +7,43 @@ from typing import Any, Mapping
 
 
 class RestoreMode(Enum):
-    """How restore should treat existing destination files."""
+    """
+    How restore should treat existing destination files.
+
+    Notes
+    -----
+    - ``ADD_ONLY``: do not overwrite existing destination files.
+    - ``OVERWRITE``: overwrite existing destination files.
+    """
 
     ADD_ONLY = "add-only"
     OVERWRITE = "overwrite"
 
 
 class RestoreVerification(Enum):
-    """Verification level recorded in the plan (execute/verify comes later)."""
+    """
+    Verification intent recorded in the plan.
+
+    Notes
+    -----
+    This value records what verification the user requested at planning time.
+    Execution-time verification is performed later.
+    """
 
     NONE = "none"
     SIZE = "size"
 
 
 class RestoreOperationType(Enum):
-    """Planned operation type for a restore candidate."""
+    """
+    Planned operation type for a restore candidate.
+
+    Notes
+    -----
+    - ``COPY_NEW``: destination does not exist.
+    - ``OVERWRITE_EXISTING``: destination exists and will be replaced.
+    - ``SKIP_EXISTING``: destination exists and will not be modified.
+    """
 
     COPY_NEW = "copy_new"
     OVERWRITE_EXISTING = "overwrite_existing"
@@ -33,10 +55,10 @@ class RestoreIntent:
     """
     Restore intent.
 
-    Parameters
+    Attributes
     ----------
     manifest_path:
-        Path to the backup run manifest.json (schema wcbt_run_manifest_v2).
+        Path to the backup run ``manifest.json`` (schema ``wcbt_run_manifest_v2``).
     destination_root:
         User-visible root directory where files would be restored.
     mode:
@@ -95,7 +117,15 @@ class RestorePlan:
     source_manifest: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to a JSON-serializable payload."""
+        """
+        Convert to a JSON-serializable payload.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary representation with Paths converted to strings and Enums stored
+            as their string values.
+        """
         return {
             "schema_version": self.schema_version,
             "execution_strategy": self.execution_strategy,
@@ -140,7 +170,15 @@ class RestoreCandidate:
     reason: str
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to a JSON-serializable payload."""
+        """
+        Convert to a JSON-serializable payload.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary representation with Paths converted to strings and Enums stored
+            as their string values.
+        """
         return {
             "operation_index": self.operation_index,
             "relative_path": self.relative_path,
