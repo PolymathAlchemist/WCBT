@@ -8,10 +8,23 @@ from typing import Any, Mapping, Protocol
 
 
 class Clock(Protocol):
-    """Injectable clock for deterministic behavior."""
+    """
+    Injectable time source used to make restore execution deterministic.
+
+    This protocol defines the minimal interface required for time access.
+    Implementations may return real time (production) or fixed / simulated
+    time (tests, replay, or debugging).
+    """
 
     def now(self) -> datetime:
-        """Return the current time as a timezone-aware datetime."""
+        """
+        Return the current time.
+
+        Returns
+        -------
+        datetime
+            Current timezone-aware datetime.
+        """
 
 
 @dataclass(frozen=True)
@@ -19,13 +32,13 @@ class JournalEvent:
     """
     A single append-only journal record.
 
-    Parameters
+    Attributes
     ----------
-    timestamp : datetime
+    timestamp:
         Event time (timezone-aware).
-    event : str
+    event:
         Stable event identifier (e.g., 'promotion_planned', 'promotion_started').
-    data : Mapping[str, Any]
+    data:
         Structured event payload. Must be JSON-serializable.
     """
 
@@ -40,8 +53,8 @@ class RestoreExecutionJournal:
 
     Notes
     -----
-    - Each call to `append()` writes one JSON object per line (JSONL).
-    - The journal is an inspectable artifact intended for debugging and audit.
+    Each call appends exactly one JSON object as a single line (JSONL).
+    Writes are append-only and do not modify existing records.
     """
 
     def __init__(self, journal_path: Path, *, clock: Clock) -> None:
@@ -51,7 +64,14 @@ class RestoreExecutionJournal:
 
     @property
     def path(self) -> Path:
-        """Return the on-disk path to the journal file."""
+        """
+        Return the on-disk path to the journal file.
+
+        Returns
+        -------
+        pathlib.Path
+            Path to the JSONL journal file.
+        """
         return self._journal_path
 
     def append(self, event: str, data: Mapping[str, Any]) -> None:
