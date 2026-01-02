@@ -16,12 +16,43 @@ _EXPECTED_RUN_MANIFEST_SCHEMA = "wcbt_run_manifest_v2"
 
 
 def _sha256_text(text: str) -> str:
+    """
+    Compute a SHA-256 hex digest for UTF-8 text.
+
+    Parameters
+    ----------
+    text:
+        Input text to hash.
+
+    Returns
+    -------
+    str
+        SHA-256 hex digest.
+    """
     digest = hashlib.sha256()
     digest.update(text.encode("utf-8"))
     return digest.hexdigest()
 
 
 def _read_manifest_text(path: Path) -> str:
+    """
+    Read the raw manifest text for audit and deterministic hashing.
+
+    Parameters
+    ----------
+    path:
+        Path to a manifest JSON file.
+
+    Returns
+    -------
+    str
+        Raw manifest text.
+
+    Raises
+    ------
+    RestoreManifestError
+        If the manifest cannot be read.
+    """
     try:
         return path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -29,6 +60,23 @@ def _read_manifest_text(path: Path) -> str:
 
 
 def _validate_destination_root(destination_root: Path) -> None:
+    """
+    Validate destination root intent invariants.
+
+    Parameters
+    ----------
+    destination_root:
+        Candidate destination root path.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    RestoreIntentError
+        If the destination root is empty, not absolute, or is an existing non-directory.
+    """
     if str(destination_root).strip() == "":
         raise RestoreIntentError("Destination root must be a non-empty path.")
 
@@ -64,6 +112,11 @@ def build_restore_plan(intent: RestoreIntent) -> RestorePlan:
         If destination root violates invariants.
     RestoreSafetyError
         If safety constraints are violated.
+
+    Notes
+    -----
+    The plan includes a SHA-256 checksum of the raw source manifest text to support
+    audit and detect unexpected manifest changes between planning and execution.
     """
     _validate_destination_root(intent.destination_root)
 
@@ -105,14 +158,7 @@ def build_restore_plan(intent: RestoreIntent) -> RestorePlan:
         archive_resolved = archive_root
         dest_resolved = destination_root
 
-    def _is_within(child: Path, parent: Path) -> bool:
-        try:
-            child.relative_to(parent)
-            return True
-        except ValueError:
-            return False
-
-    if _is_within(dest_resolved, archive_resolved) or _is_within(archive_resolved, dest_resolved):
+    if _either_path_contains_other(dest_resolved, archive_resolved):
         raise RestoreSafetyError(
             f"Destination root and archive root must not contain each other. "
             f"dest={destination_root} archive={archive_root}"
@@ -164,8 +210,54 @@ def build_restore_plan(intent: RestoreIntent) -> RestorePlan:
     )
 
 
+def _either_path_contains_other(a: Path, b: Path) -> bool:
+    """
+    Check whether either path contains the other (by path prefix containment).
+
+    Parameters
+    ----------
+    a:
+        First path (expected to be resolved when possible).
+    b:
+        Second path (expected to be resolved when possible).
+
+    Returns
+    -------
+    bool
+        True if `a` is within `b` or `b` is within `a`.
+    """
+    try:
+        a.relative_to(b)
+        return True
+    except ValueError:
+        pass
+
+    try:
+        b.relative_to(a)
+        return True
+    except ValueError:
+        return False
+
+
 def parse_restore_mode(value: str) -> RestoreMode:
-    """Parse CLI restore mode string into RestoreMode."""
+    """
+    Parse a CLI restore mode string into a RestoreMode.
+
+    Parameters
+    ----------
+    value:
+        Restore mode string.
+
+    Returns
+    -------
+    RestoreMode
+        Parsed restore mode enum.
+
+    Raises
+    ------
+    RestoreIntentError
+        If the value is not a supported restore mode.
+    """
     try:
         return RestoreMode(value)
     except ValueError as exc:
@@ -173,7 +265,24 @@ def parse_restore_mode(value: str) -> RestoreMode:
 
 
 def parse_restore_verification(value: str) -> RestoreVerification:
-    """Parse CLI verification string into RestoreVerification."""
+    """
+    Parse a CLI verification level string into a RestoreVerification.
+
+    Parameters
+    ----------
+    value:
+        Verification level string.
+
+    Returns
+    -------
+    RestoreVerification
+        Parsed verification enum.
+
+    Raises
+    ------
+    RestoreIntentError
+        If the value is not a supported verification level.
+    """
     try:
         return RestoreVerification(value)
     except ValueError as exc:
