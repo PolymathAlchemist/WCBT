@@ -1,108 +1,116 @@
-# WCBT (Working Copy Backup Tool)
+# WCBT — Working Copy Backup Tool
 
-WCBT is a deterministic, artifact-first backup and restore tool designed for **inspectability, safety, and testability**.  
-Every major operation produces on-disk artifacts that describe *what was planned*, *what executed*, and *what was verified*.
+WCBT is an **artifact-first, deterministic backup / restore / verify system**.
+Its primary goal is not convenience output, but **inspectable truth**: every
+operation produces durable artifacts that describe *what was intended*, *what
+was executed*, and *what was observed* — even on failure.
 
-This repository is under active development and follows a strict, test-driven integration approach.
-
----
-
-## Key Principles
-
-- **Artifact-first design**: all critical actions write inspectable artifacts to disk
-- **Deterministic behavior**: no hidden globals, no implicit state
-- **Safe failure modes**: failures still produce artifacts for post-mortem inspection
-- **Add-only restore semantics**: restores never overwrite existing data
-- **Strong typing**: `Path`, enums, domain types; `mypy` enforced
-- **Minimal cleverness**: readability over compactness
+Originally motivated by safely backing up and restoring **Minecraft worlds**,
+WCBT has been generalized without abandoning those safety constraints.
 
 ---
 
-## Current Capabilities
+## Core Principles (Non‑Negotiable)
 
-### Backup
-- End-to-end backup pipeline
-- Deterministic plan generation
-- Executed copy operations recorded in a manifest
-- Dry-run support with artifact output
-- Locking to prevent concurrent runs
+- **Artifact-first behavior**
+  - Plans, execution results, and verification results are written to disk.
+  - Artifacts are the contract; stdout is incidental.
 
-### Restore
-- End-to-end restore pipeline
-- Add-only conflict policy (artifact-first failure)
-- Restore summary artifacts
-- Explicit exit codes for conflict conditions
+- **Deterministic execution**
+  - No hidden globals
+  - Ordered, repeatable output
+  - Verification is driven by *expected operations*, not filesystem discovery.
 
-### Verify
-- End-to-end verification of archived runs
-- Verifies archived payload files against expected state
-- **Artifacts written on both success and failure**
+- **Safe failure modes**
+  - Failures never destroy state.
+  - Restore is **add-only**; conflicts are surfaced as artifacts + exit codes.
 
-Verify produces **three artifacts** in the run directory:
+- **Strong typing**
+  - `Path`, enums, domain types everywhere
+  - `mypy` clean
 
-| Artifact | Description |
-|--------|-------------|
-| `verify_report.json` | Aggregate verification summary (counts, algorithm, schema) |
-| `verify_summary.txt` | Human-readable verification summary |
-| `verify_report.jsonl` | One JSON object per verified file (machine-readable stream) |
+- **Tests assert on artifacts**
+  - JSON / JSONL / text artifacts, not console output.
 
 ---
 
-## Verify JSONL Format
+## Pipeline Overview
 
-`verify_report.jsonl` contains one record per expected file:
+### 1. Backup
+- Builds an explicit **plan** of expected operations.
+- Executes copy operations deterministically.
+- Writes execution artifacts regardless of success or failure.
 
-```json
-{
-  "schema": "wcbt_verify_record_v1",
-  "run_id": "2025-01-01T12-00-00Z",
-  "status": "ok | missing",
-  "path": "nested/example.bin"
-}
-```
+### 2. Restore
+- Applies **add-only semantics**.
+- Never overwrites existing files.
+- Conflicts are written as artifacts and surfaced via exit codes.
 
-Characteristics:
-- One JSON object per line (JSONL)
-- Deterministic ordering
-- Paths are relative to the run root
-- Records are emitted **even when verification fails**
+### 3. Verify
+Verification validates expected destinations and emits three artifacts:
 
-This stream is intended for downstream tooling, auditing, and future drift classification.
+- `verify_report.json`
+  - Machine-readable summary
+- `verify_summary.txt`
+  - Human-readable report
+- `verify_report.jsonl`
+  - Deterministic, one-record-per-expected-file stream
 
----
-
-## CLI Overview
-
-```bash
-wcbt backup  --profile NAME --source PATH [--dry-run]
-wcbt restore --profile NAME --run-id ID
-wcbt verify  --profile NAME --run-id ID
-```
-
-Exit codes are explicit and stable.
+Verification always writes artifacts, even on failure.
 
 ---
 
-## Development Standards
+## Verify Classification (v1.1)
 
-- `ruff`, `pytest`, and `mypy` must pass before commit
-- NumPy-style docstrings required for public APIs
-- Minimal diffs preferred over rewrites
-- File-level anchors required for cross-module changes
-- Tests must assert on **artifacts**, not console output
+Verification currently classifies each expected file as one of:
+
+- `ok` — exists, readable, and matches expected hash (if available)
+- `missing` — expected destination does not exist
+- `unreadable` — exists but cannot be read or hashed
+- `hash_mismatch` — exists and readable, but content differs from expected hash
+
+JSONL records are:
+- deterministic
+- ordered by expected operations
+- suitable for future drift analysis and classification
 
 ---
 
-## Project Status
+## Exit Codes
 
-Completed milestones:
-- Backup pipeline end-to-end
-- Restore pipeline end-to-end
-- Dry-run artifact contract
-- Add-only restore conflict policy
-- Restore summary artifacts
-- CLI exit codes
-- Verify artifacts on success and failure
-- Verify JSONL stream with missing-file detection
+- `0` — all verification records are `ok`
+- non‑zero — any non‑ok condition detected
 
-Next milestones are being planned.
+Exit codes never suppress artifact generation.
+
+---
+
+## Status
+
+- Backup pipeline: **complete**
+- Restore pipeline: **complete**
+- Verify pipeline: **complete**
+  - JSON, text, and JSONL artifacts
+  - Missing, unreadable, and hash mismatch classification
+- Tooling gates:
+  - `ruff`, `mypy`, `pytest`, coverage all passing
+
+---
+
+## Philosophy
+
+WCBT is intentionally conservative.
+
+It favors:
+- correctness over convenience
+- inspectability over speed
+- safety over automation
+
+If something goes wrong, WCBT’s job is not to guess — it is to **tell the truth,
+clearly, and permanently**.
+
+---
+
+## License
+
+License: To be determined
