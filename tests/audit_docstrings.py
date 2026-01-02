@@ -1,16 +1,16 @@
 """
 Docstring audit utility for WCBT.
 
-This tool reports missing docstrings for public, module-scope APIs
-(functions/classes) in a repository.
+This script reports missing docstrings for public, module-scope APIs
+(functions/classes) in the codebase.
 
-Defaults:
-- Checks module-scope `def` / `class` only.
+By default, it:
+- Checks only module-scope `def` / `class` definitions.
 - Ignores private names (starting with `_`).
 - Excludes virtualenv and cache directories.
 - Excludes tests and already-certified subsystems (backup/restore/profile_lock).
 
-The core API is importable for use by tests and a future PySide6 GUI.
+Use CLI flags to broaden scope or add module-docstring checks.
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ class Finding:
 class Config:
     """Configuration for docstring auditing."""
 
-    include_tests: bool = False
-    include_certified: bool = False
-    check_module_docstrings: bool = False
+    include_tests: bool
+    include_certified: bool
+    check_module_docstrings: bool
 
 
 EXCLUDE_DIR_PARTS = {
@@ -98,7 +98,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--check-module-docstrings",
         action="store_true",
-        help="Also flag missing module header docstrings (default: off).",
+        help="Also flag missing module docstrings (file header docstrings) (default: off).",
     )
     parser.add_argument(
         "--json",
@@ -143,7 +143,7 @@ def _is_excluded(py_file: Path, repo_root: Path, config: Config) -> bool:
 
 def _audit_module_scope_defs(py_file: Path) -> list[Finding]:
     """
-    Audit a Python file for missing docstrings on public module-scope defs.
+    Audit a single Python file for missing docstrings on public module-scope defs.
 
     Parameters
     ----------
@@ -172,7 +172,7 @@ def _audit_module_scope_defs(py_file: Path) -> list[Finding]:
 
 def _audit_module_docstring(py_file: Path) -> Finding | None:
     """
-    Audit a Python file for a missing module docstring.
+    Audit a single Python file for a missing module docstring.
 
     Parameters
     ----------
@@ -187,7 +187,9 @@ def _audit_module_docstring(py_file: Path) -> Finding | None:
     source = py_file.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(py_file))
 
-    if ast.get_docstring(tree) is None:
+    module_doc = ast.get_docstring(tree)
+    if module_doc is None:
+        # Convention: point at line 1 for module-docstring findings.
         return Finding(py_file, 1, "module", py_file.name)
     return None
 
@@ -221,7 +223,7 @@ def audit(repo_root: Path, config: Config) -> list[Finding]:
 
         findings.extend(_audit_module_scope_defs(py_file))
 
-    return sorted(findings, key=lambda f: (f.path.as_posix(), f.lineno, f.kind, f.name))
+    return sorted(findings, key=lambda f: (f.path.as_posix(), f.lineno, f.name))
 
 
 def main(argv: list[str]) -> int:
