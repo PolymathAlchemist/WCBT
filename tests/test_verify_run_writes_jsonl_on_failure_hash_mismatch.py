@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import pytest
 
@@ -60,7 +61,7 @@ def test_verify_run_writes_jsonl_on_failure_hash_mismatch(
     assert payload_files
 
     # Simulate presence of an expected digest so hash mismatch is evaluated
-    def _fake_extract(op: Mapping[str, Any], exec_result: Mapping[str, Any]) -> str:
+    def _fake_extract(op: Mapping[str, Any], exec_result: Mapping[str, Any]) -> str | None:
         return "0000000000000000000000000000000000000000000000000000000000000000"
 
     monkeypatch.setattr(

@@ -16,7 +16,11 @@ from .verification_results import (
 
 
 class RestoreVerificationError(RestoreError):
-    """Raised when staged restore verification fails."""
+    """
+    Raised when staged restore verification fails.
+
+    This error indicates that staged content is not safe to promote into the destination.
+    """
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,24 @@ class VerificationResult:
 
 
 def _candidate_to_dict(candidate: Any) -> Mapping[str, Any]:
+    """
+    Normalize a restore candidate to a mapping.
+
+    Parameters
+    ----------
+    candidate:
+        Candidate object. May be a mapping or an object providing ``to_dict()``.
+
+    Returns
+    -------
+    collections.abc.Mapping[str, Any]
+        Candidate mapping.
+
+    Raises
+    ------
+    RestoreVerificationError
+        If the candidate cannot be converted into a mapping.
+    """
     if hasattr(candidate, "to_dict") and callable(candidate.to_dict):
         result = candidate.to_dict()
         if isinstance(result, Mapping):
@@ -52,6 +74,19 @@ def _candidate_to_dict(candidate: Any) -> Mapping[str, Any]:
 
 
 def _coerce_path(value: Any) -> Optional[Path]:
+    """
+    Coerce a value into a Path when possible.
+
+    Parameters
+    ----------
+    value:
+        Candidate value. Supported: Path, str, or None.
+
+    Returns
+    -------
+    pathlib.Path | None
+        Path if coercible, otherwise None.
+    """
     if value is None:
         return None
     if isinstance(value, Path):
@@ -62,6 +97,24 @@ def _coerce_path(value: Any) -> Optional[Path]:
 
 
 def _extract_relative_destination_path(candidate_dict: Mapping[str, Any]) -> Path:
+    """
+    Extract the relative destination path from a candidate mapping.
+
+    Parameters
+    ----------
+    candidate_dict:
+        Candidate mapping.
+
+    Returns
+    -------
+    pathlib.Path
+        Relative destination path.
+
+    Raises
+    ------
+    RestoreVerificationError
+        If a supported destination key is missing or if the extracted path is absolute.
+    """
     dest_keys = ("relative_path", "destination_relative_path", "relpath", "dest_relpath")
     rel_dest: Optional[Path] = None
     for key in dest_keys:
@@ -82,6 +135,19 @@ def _extract_relative_destination_path(candidate_dict: Mapping[str, Any]) -> Pat
 
 
 def _extract_expected_size(candidate_dict: Mapping[str, Any]) -> Optional[int]:
+    """
+    Extract an expected size value from a candidate mapping, if present.
+
+    Parameters
+    ----------
+    candidate_dict:
+        Candidate mapping.
+
+    Returns
+    -------
+    int | None
+        Expected size in bytes if present and parseable, otherwise None.
+    """
     size_keys = ("size_bytes", "expected_size_bytes", "expected_size", "size")
     for key in size_keys:
         raw = candidate_dict.get(key)
@@ -95,6 +161,28 @@ def _extract_expected_size(candidate_dict: Mapping[str, Any]) -> Optional[int]:
 
 
 def _extract_source_path(candidate_dict: Mapping[str, Any]) -> Path:
+    """
+    Extract the source path from a candidate mapping.
+
+    Restore verification uses the candidate's source file to validate staged content.
+    Candidates may encode the source path under multiple legacy keys; this helper tries
+    the supported keys and fails fast when none are present.
+
+    Parameters
+    ----------
+    candidate_dict:
+        Candidate mapping.
+
+    Returns
+    -------
+    pathlib.Path
+        Source path for the candidate.
+
+    Raises
+    ------
+    RestoreVerificationError
+        If a supported source key is missing or cannot be coerced into a path.
+    """
     source_keys = ("source_path", "source", "src", "archive_path")
     source_path = None
     for key in source_keys:
@@ -118,29 +206,38 @@ def verify_restore_stage(
     artifacts_root: Path | None = None,
 ) -> VerificationResult:
     """
-    Verify staged restore files before promotion.
+    Verify staged restore content before promotion.
 
     Parameters
     ----------
     candidates:
-        Restore candidates produced by materialization. Must be dict-like or support `to_dict()`.
-        Must include a relative destination path key.
+        Restore candidates produced by materialization. Each candidate must be dict-like or
+        provide a ``to_dict()`` method returning a mapping. A relative destination path is
+        required.
     stage_root:
         Root directory containing staged restore content.
     verification_mode:
-        Verification mode string. Supported: 'none', 'size'.
+        Verification mode string. Supported: ``'none'`` and ``'size'``.
+    dry_run:
+        If True, do not perform filesystem checks. When artifacts_root is provided, write
+        per-candidate results as ``SKIPPED`` and a summary with status ``'skipped'``.
     journal:
-        Optional execution journal.
+        Optional execution journal for deterministic progress events.
+    artifacts_root:
+        Optional directory where verification artifacts are written.
 
     Returns
     -------
     VerificationResult
-        Summary of verification.
+        Summary of verification. For ``dry_run=True`` and ``verification_mode='none'``,
+        this reports ``verified_files == planned_files`` because all candidates are treated
+        as skipped rather than failed.
 
     Raises
     ------
     RestoreVerificationError
-        If verification fails (missing file, size mismatch, unsupported mode).
+        If verification fails (missing staged file, missing source file, size mismatch, or
+        unsupported verification mode).
     """
     mode = verification_mode.strip().lower()
     if mode not in {"none", "size"}:
