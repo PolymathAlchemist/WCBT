@@ -27,6 +27,19 @@ from backup_engine.restore.service import run_restore
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    """
+    Build the CLI argument parser.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser for the WCBT command-line interface.
+
+    Notes
+    -----
+    Parsing is intentionally separate from execution. The CLI delegates to engine
+    modules so behavior remains testable outside the CLI entrypoint.
+    """
     parser = argparse.ArgumentParser(prog="wcbt", description="World Chronicle Backup Tool (WCBT)")
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -187,6 +200,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """
+    Run the WCBT CLI.
+
+    Parameters
+    ----------
+    argv:
+        Optional argument vector. If None, arguments are read from sys.argv.
+
+    Returns
+    -------
+    int
+        Exit code.
+
+        - 0: Success
+        - 1: Recoverable restore error (non-conflict)
+        - 2: Input error, safety violation, domain error, or restore conflict
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
 

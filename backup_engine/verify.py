@@ -81,7 +81,7 @@ class VerificationCounts:
 
 @dataclass(frozen=True, slots=True)
 class VerificationStatusCounts:
-    """Deterministic counts by emitted verify status."""
+    """Deterministic counts by emitted verify record status."""
 
     ok: int
     missing: int
@@ -182,7 +182,7 @@ def verify_run(
 
         write_manifest_json_atomic(manifest_path, updated_manifest)
 
-        # Write verify report artifacts (always, even on success)
+        # Always write artifacts so runs are inspectable even when verification fails.
         _write_verify_report(
             run_root,
             run_id=run_id,
@@ -226,8 +226,9 @@ def _verify_manifest(
 
     Returns
     -------
-    tuple[dict[str, Any], VerificationCounts]
-        Updated manifest dictionary and deterministic counts.
+    tuple[dict[str, Any], VerificationCounts, VerificationStatusCounts, list[dict[str, Any]]]
+        Updated manifest dictionary, aggregate counts, deterministic status counts,
+        and JSONL record payloads.
 
     Raises
     ------
@@ -568,6 +569,16 @@ def _write_verify_report(
         Hash algorithm name.
     counts:
         Aggregate verification counts.
+    status_counts:
+        Deterministic counts by verify record status.
+    records:
+        JSONL record payloads to write (one per verified or failed file).
+
+    Artifacts
+    ---------
+    - verify_report.json
+    - verify_report.jsonl
+    - verify_summary.txt
     """
     verify_report = {
         "schema": "wcbt_verify_report_v1",
