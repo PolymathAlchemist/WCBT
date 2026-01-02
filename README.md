@@ -97,6 +97,44 @@ Exit codes never suppress artifact generation.
 
 ---
 
+## Verify an archive run
+
+`wcbt verify` validates an already-materialized backup run by hashing archived files and recording deterministic results.
+
+### Outputs (artifact-first)
+
+After running verify, the run directory will contain:
+
+- `manifest.json` (updated atomically): per-operation verification fields are written into `execution.results[*].verification`
+- `verify_report.json`: deterministic summary JSON
+- `verify_report.jsonl`: line-delimited per-file records (one record per verified/failed file)
+- `verify_summary.txt`: human-readable summary
+
+### Status values
+
+Each JSONL record includes a `status` field with one of:
+
+- `ok`           : file exists, readable, and digest matches the expected value (when provided)
+- `missing`      : destination file not found
+- `unreadable`   : destination file exists but could not be read/hashed
+- `hash_mismatch`: digest computed but does not match the expected digest
+
+### Deterministic status counts
+
+`verify_report.json` includes a `status_counts` object, providing a stable aggregation of record statuses:
+
+```json
+"status_counts": {
+  "ok": 123,
+  "missing": 0,
+  "unreadable": 0,
+  "hash_mismatch": 1
+}
+```
+
+The same counts are also surfaced in `verify_summary.txt` in a fixed order for testability.
+
+---
 ## Philosophy
 
 WCBT is intentionally conservative.
