@@ -115,6 +115,10 @@ def compute_digest(file_path: Path, algorithm: HashAlgorithm) -> str:
         If the file cannot be read.
     ValueError
         If the algorithm is not supported.
+
+    Notes
+    -----
+    Files are streamed in 1 MiB chunks to avoid unbounded memory usage.
     """
     if algorithm is not HashAlgorithm.SHA256:
         raise ValueError(f"Unsupported hash algorithm: {algorithm}")
@@ -158,6 +162,15 @@ def verify_run(
         For domain and safety errors.
     ValueError
         If required manifest fields are missing or invalid.
+
+    Artifacts
+    ---------
+    The following files are written under the run directory:
+
+    - manifest.json (updated atomically)
+    - verify_report.json
+    - verify_report.jsonl
+    - verify_summary.txt
     """
     paths = resolve_profile_paths(profile_name, data_root=data_root)
 

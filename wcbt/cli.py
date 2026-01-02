@@ -214,8 +214,8 @@ def main(argv: list[str] | None = None) -> int:
         Exit code.
 
         - 0: Success
-        - 1: Recoverable restore error (non-conflict)
-        - 2: Input error, safety violation, domain error, or restore conflict
+        - 1: Restore failed (non-conflict)
+        - 2: Input error, safety violation, domain error, verify/backup failure, or restore conflict
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
