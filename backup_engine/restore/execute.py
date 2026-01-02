@@ -49,10 +49,32 @@ class PromotionOutcome:
 
 
 class PromotionError(RestoreError):
-    """Raised when atomic promotion fails."""
+    """
+    Raised when atomic promotion fails.
+
+    Notes
+    -----
+    Promotion failures indicate that the staged tree could not be safely promoted
+    to the destination, either due to filesystem state or mid-operation errors.
+    """
 
 
 def _derive_previous_root(target_root: Path, run_id: str) -> Path:
+    """
+    Derive a deterministic path for preserving a previous destination.
+
+    Parameters
+    ----------
+    target_root:
+        Final restore destination directory.
+    run_id:
+        Unique restore run identifier.
+
+    Returns
+    -------
+    pathlib.Path
+        Path where the previous destination would be preserved.
+    """
     return target_root.with_name(f".wcbt_restore_previous_{target_root.name}_{run_id}")
 
 
@@ -62,6 +84,23 @@ def _validate_promotion_paths(
     target_root: Path,
     previous_root: Optional[Path],
 ) -> None:
+    """
+    Validate filesystem preconditions for atomic promotion.
+
+    Parameters
+    ----------
+    stage_root:
+        Directory containing staged restore content.
+    target_root:
+        Final restore destination directory.
+    previous_root:
+        Path where an existing destination would be moved, if applicable.
+
+    Raises
+    ------
+    PromotionError
+        If required paths do not exist, are of the wrong type, or would conflict.
+    """
     if not stage_root.exists() or not stage_root.is_dir():
         raise PromotionError(f"Stage root does not exist or is not a directory: {stage_root}")
 
@@ -99,6 +138,10 @@ def plan_promotion(
     ------
     PromotionError
         If promotion cannot be safely planned.
+
+    Notes
+    -----
+    Atomic promotion is implemented via directory renames and does not copy data.
     """
     previous_root: Optional[Path] = None
     operations: List[str] = []
@@ -150,6 +193,12 @@ def execute_promotion(
     ------
     PromotionError
         If promotion fails mid-operation.
+
+    Notes
+    -----
+    If promotion fails after partially mutating the filesystem, a
+    ``PromotionError`` is raised and the system relies on the preserved
+    ``previous_root`` (if any) for recovery.
     """
     if journal is not None:
         journal.append(
@@ -236,6 +285,11 @@ def promote_stage_to_destination(
     ------
     PromotionError
         If promotion fails mid-operation.
+
+    Notes
+    -----
+    This is a convenience wrapper around ``plan_promotion`` and
+    ``execute_promotion``.
     """
     plan = plan_promotion(stage_root=stage_root, target_root=destination_root, run_id=run_id)
     return execute_promotion(plan=plan, dry_run=dry_run, journal=journal)
