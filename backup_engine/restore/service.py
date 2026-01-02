@@ -24,10 +24,40 @@ __all__ = [
 
 
 def _restore_artifacts_root(destination_root: Path, run_id: str) -> Path:
+    """
+    Return the root directory for restore artifacts.
+
+    Parameters
+    ----------
+    destination_root:
+        Destination root for the restore.
+    run_id:
+        Restore run identifier.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the restore artifacts root directory.
+    """
     return destination_root / ".wcbt_restore" / run_id
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """
+    Write a JSON artifact to disk using atomic replacement.
+
+    Parameters
+    ----------
+    path:
+        Target output path.
+    payload:
+        JSON-serializable payload.
+
+    Raises
+    ------
+    RestoreArtifactError
+        If the artifact cannot be written.
+    """
     try:
         write_json_atomic(path, payload)
     except Exception as exc:  # noqa: BLE001
@@ -35,6 +65,26 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    """
+    Write a deterministic JSONL artifact to disk.
+
+    Parameters
+    ----------
+    path:
+        Target output path.
+    rows:
+        Row payloads to serialize (one JSON object per line).
+
+    Raises
+    ------
+    RestoreArtifactError
+        If the artifact cannot be written.
+
+    Notes
+    -----
+    Rows are serialized with sorted keys and LF newlines to keep artifacts stable
+    across platforms and runs.
+    """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8", newline="\n") as handle:
@@ -57,6 +107,35 @@ def _write_restore_summary(
     result: str,
     counts: dict[str, int],
 ) -> None:
+    """
+    Write the restore summary JSON artifact.
+
+    Parameters
+    ----------
+    artifacts_root:
+        Root directory where restore artifacts are written.
+    run_id:
+        Restore run identifier.
+    manifest_path:
+        Path to the source run manifest.
+    destination_root:
+        Destination root directory for the restore.
+    mode:
+        Restore mode string (for example, 'add-only' or 'overwrite').
+    verify:
+        Verification mode string (for example, 'none' or 'size').
+    dry_run:
+        If True, no files are copied and no promotion is performed.
+    result:
+        Result classification string ('ok', 'conflict', or 'error').
+    counts:
+        Deterministic count summary (planned, conflicts, staged_files, failed_files, verified_files).
+
+    Raises
+    ------
+    RestoreArtifactError
+        If the summary cannot be written.
+    """
     _write_json(
         artifacts_root / "restore_summary.json",
         {
@@ -74,7 +153,12 @@ def _write_restore_summary(
 
 @dataclass(frozen=True)
 class SystemClock(Clock):
-    """Wall-clock implementation for production runs."""
+    """
+    Wall-clock implementation for production runs.
+
+    Returns UTC timestamps to support deterministic journaling and artifact writing
+    across machines.
+    """
 
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -91,24 +175,64 @@ def run_restore(
     clock: Clock | None = None,
 ) -> None:
     """
-    Plan/materialize and build a staged restore tree.
+    Plan, stage, optionally verify, and optionally promote a restore.
+
+    This function performs the restore pipeline:
+    - validate inputs and parse mode/verification options
+    - build a deterministic restore plan
+    - materialize candidate actions
+    - write artifact-first plan outputs
+    - build a staged restore tree
+    - optionally verify the staged tree
+    - if not dry-run, promote the staged tree into destination_root
 
     Parameters
     ----------
     manifest_path:
-        Path to run manifest.json (schema wcbt_run_manifest_v2).
+        Path to a run manifest.json (schema_version 'wcbt_run_manifest_v2').
     destination_root:
         Destination root directory for the restore.
     mode:
-        CLI mode string ('add-only' or 'overwrite').
+        Restore mode string (for example, 'add-only' or 'overwrite').
     verify:
-        CLI verification string ('none' or 'size').
+        Verification mode string (for example, 'none' or 'size').
     dry_run:
-        If True, write plan artifacts and journal, but do not copy files into stage.
+        If True, write artifacts and journal, but do not copy files into the stage and do not promote.
     data_root:
-        Unused in this milestone; reserved for future profile-oriented restore flows.
+        Reserved for future profile-oriented restore flows. Currently unused.
     clock:
         Injectable clock used for deterministic journaling.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    RestoreManifestError
+        If the run manifest is missing required fields or has an unsupported schema version.
+    RestoreArtifactError
+        If an artifact cannot be written.
+    RestoreConflictError
+        If conflicts are detected in add-only mode.
+    RestoreManifestError
+        If required manifest structure is invalid.
+    Exception
+        Re-raises unexpected exceptions after writing a best-effort error summary.
+
+    Artifacts
+    ---------
+    Artifacts are written under either:
+
+    - Dry-run: `{destination_root}/.wcbt_restore/{run_id}/`
+    - Non-dry-run: `{stage_root}/.wcbt_restore/{run_id}/` (so artifacts survive atomic promotion)
+
+    The following artifacts may be written:
+    - `restore_plan.json`
+    - `restore_candidates.jsonl`
+    - `restore_conflicts.jsonl` (add-only conflicts only)
+    - `execution_journal.jsonl`
+    - `restore_summary.json`
     """
     _ = data_root
 
