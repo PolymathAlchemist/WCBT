@@ -29,7 +29,8 @@ class PlannedOperationType(Enum):
     Notes
     -----
     This enum is intentionally explicit and stable; it is part of the public
-    domain model for planning and reporting.
+    domain model for planning and reporting. Values are serialized into run
+    manifests and report artifacts.
     """
 
     COPY_FILE_TO_ARCHIVE = "copy_file_to_archive"
@@ -189,7 +190,7 @@ def _is_unsafe_relative_path(relative_path: Path) -> bool:
 
 def _is_within_base(base: Path, candidate: Path) -> bool:
     """
-    Check that candidate is within base.
+    Check that a resolved candidate path is within a resolved base directory.
 
     Parameters
     ----------

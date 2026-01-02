@@ -87,6 +87,60 @@ def run_backup(
 ) -> None:
     """
     Plan (and optionally materialize and execute) a backup for a given profile.
+
+    Parameters
+    ----------
+    profile_name:
+        Profile name that owns the backup run.
+    source:
+        Source directory to scan and plan from.
+    dry_run:
+        If True, plan only and do not create a run directory under archives_root.
+    data_root:
+        Override WCBT data root (primarily for testing).
+    excluded_directory_names:
+        Additional directory names to exclude from scanning.
+    excluded_file_names:
+        Additional file names to exclude from scanning.
+    use_default_excludes:
+        If True, include the default exclude sets in addition to any user-provided excludes.
+    max_items:
+        Maximum number of plan entries to render in the human-readable report.
+    write_plan:
+        If True, write the report text to disk even in dry-run mode.
+    plan_path:
+        Optional override output path for the plan artifact in dry-run mode.
+    overwrite_plan:
+        If True, overwrite an existing plan artifact at plan_path/output_path.
+    clock:
+        Clock override for deterministic testing.
+    execute:
+        If True, execute the copy plan after materialization.
+    force:
+        Break a provably stale lock automatically.
+    break_lock:
+        Break an existing lock even when not provably stale.
+
+    Raises
+    ------
+    ValueError
+        If parameters are invalid (for example max_items < 0 or execute=True with dry_run=True).
+    PlanArtifactWriteError
+        If a dry-run plan artifact cannot be written safely.
+    BackupExecutionError
+        If execute=True and copy execution fails.
+    WcbtError
+        For domain and safety errors.
+
+    Artifacts
+    ---------
+    When dry_run=True and write_plan=True (or plan_path is provided):
+    - Writes a plan text file (default: {archive_root}/plan.txt)
+
+    When dry_run=False:
+    - Materializes a run directory under archives_root
+    - Writes plan text and a run manifest
+    - When execute=True, updates the manifest with per-operation results
     """
     if max_items < 0:
         raise ValueError("max_items must be non-negative.")
@@ -192,6 +246,18 @@ def _build_executed_run_manifest(
 ) -> BackupRunManifestV2:
     """
     Create a new run manifest including execution results.
+
+    Parameters
+    ----------
+    base_manifest:
+        Materialized run manifest without execution results.
+    execution_summary:
+        Execution summary produced by the copy executor.
+
+    Returns
+    -------
+    BackupRunManifestV2
+        New manifest with an execution payload attached.
     """
     results: list[RunOperationResultV1] = []
     for r in execution_summary.results:
@@ -265,7 +331,23 @@ def _build_backup_report_text(
 
 
 def _write_plan_artifact(*, output_path: Path, content: str, overwrite: bool) -> None:
-    """Write a plan artifact to disk safely."""
+    """
+    Write a plan artifact to disk safely.
+
+    Parameters
+    ----------
+    output_path:
+        Target output path for the plan text.
+    content:
+        Plan text content to write.
+    overwrite:
+        If True, overwrite output_path when it exists.
+
+    Raises
+    ------
+    PlanArtifactWriteError
+        If the artifact cannot be written safely.
+    """
     try:
         output_path = output_path.expanduser()
         parent = output_path.parent
