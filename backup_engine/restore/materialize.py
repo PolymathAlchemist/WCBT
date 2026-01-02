@@ -13,7 +13,22 @@ def _relative_path_to_parts(relative_path: str) -> list[str]:
     """
     Split a manifest relative_path into safe path parts.
 
-    This handles Windows-style "nested\\b.txt" and POSIX "nested/b.txt" consistently.
+    Parameters
+    ----------
+    relative_path:
+        Manifest-relative path string. Both Windows-style (``nested\\b.txt``) and POSIX
+        (``nested/b.txt``) separators are accepted.
+
+    Returns
+    -------
+    list[str]
+        Path components suitable for safe ``Path.joinpath(*parts)`` usage.
+
+    Raises
+    ------
+    RestoreMaterializationError
+        If the path is empty, cannot be split into parts, contains traversal (``.`` or ``..``),
+        or contains disallowed segments (for example, colon characters).
     """
     raw = relative_path.strip()
     if raw == "":
@@ -39,6 +54,24 @@ def _relative_path_to_parts(relative_path: str) -> list[str]:
 
 
 def _operation_relative_path(operation: Mapping[str, Any]) -> str:
+    """
+    Extract and validate the operation relative_path field.
+
+    Parameters
+    ----------
+    operation:
+        Run manifest operation mapping.
+
+    Returns
+    -------
+    str
+        Operation relative path.
+
+    Raises
+    ------
+    RestoreMaterializationError
+        If the operation is missing a string ``relative_path`` field.
+    """
     rel = operation.get("relative_path")
     if not isinstance(rel, str):
         raise RestoreMaterializationError("Operation missing string 'relative_path'.")
@@ -58,12 +91,24 @@ def materialize_restore_candidates(plan: RestorePlan) -> list[RestoreCandidate]:
     -------
     list[RestoreCandidate]
         Restore candidates in deterministic order (same order as source manifest operations).
+
+    Raises
+    ------
+    RestoreMaterializationError
+        If required internal plan fields are missing or invalid.
+
+    Notes
+    -----
+    The RestorePlan carries a minimal manifest summary. The service layer provides the full
+    operations list via the internal ``_operations_full`` field to keep planning deterministic
+    while avoiding duplicating large manifest payloads.
     """
     operations_any = plan.source_manifest.get("operations_count")
     _ = operations_any  # documented count; actual ops come from the source manifest on disk via service layer
 
-    # The RestorePlan intentionally carries only minimal manifest fields.
-    # The service layer passes the full run manifest operations list here via plan.source_manifest shadowing.
+    # RestorePlan keeps only a minimal manifest summary for stability and size.
+    # The service layer injects the full operations list via an internal field so that
+    # candidate materialization remains deterministic without duplicating the manifest.
     run_ops = plan.source_manifest.get("_operations_full")
     if not isinstance(run_ops, list):
         raise RestoreMaterializationError(
