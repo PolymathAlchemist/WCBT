@@ -125,6 +125,11 @@ def execute_copy_plan(
         If required artifacts are missing or if a planned destination is unsafe.
     BackupExecutionError
         If an unrecoverable execution failure occurs.
+
+    Artifacts
+    ---------
+    This function updates execution results in memory only. Persisted artifacts
+    (for example, manifest.json updates) are written by the caller.
     """
     _assert_materialized_run_invariants(run_root=run_root)
 
@@ -182,10 +187,28 @@ def _execute_single_operation(
     """
     Execute a single planned operation.
 
+    Parameters
+    ----------
+    operation_index:
+        Index of the operation in the backup plan.
+    operation:
+        Planned operation to execute.
+    run_root:
+        Resolved run root directory.
+    reserved_paths:
+        Set of resolved paths that must never be overwritten.
+
+    Returns
+    -------
+    OperationExecutionResult
+        Deterministic execution result for this operation.
+
     Notes
     -----
-    - Non-copy operations are skipped (recorded explicitly).
-    - Copy operations are executed with strict safety checks.
+    - Non-copy operations are skipped and recorded explicitly.
+    - Copy operations enforce strict safety checks before filesystem writes.
+    - Failures are captured as result outcomes rather than raised, allowing
+      deterministic partial execution summaries.
     """
     if operation.operation_type is not PlannedOperationType.COPY_FILE_TO_ARCHIVE:
         return OperationExecutionResult(
@@ -256,13 +279,22 @@ def _assert_destination_is_safe(
     reserved_paths: set[Path],
 ) -> None:
     """
-    Validate that the destination path is safe to write.
+    Validate that a planned destination path is safe to write.
 
-    Safety rules
-    ------------
-    - Destination must be within run_root.
-    - Destination must not target reserved artifacts.
-    - Destination file must not already exist.
+    Parameters
+    ----------
+    run_root:
+        Resolved run root directory.
+    destination_path:
+        Resolved destination file path.
+    reserved_paths:
+        Set of resolved paths that must never be written to.
+
+    Raises
+    ------
+    BackupInvariantViolationError
+        If the destination escapes the run root, targets a reserved artifact,
+        or already exists.
     """
     try:
         destination_path.relative_to(run_root)
@@ -299,6 +331,11 @@ def _copy_file_strict(*, source_path: Path, destination_path: Path) -> None:
         If the source path is missing or is not a regular file, or if the source is a symlink.
     OSError
         If filesystem operations fail.
+
+    Notes
+    -----
+    This function enforces strict checks to avoid copying unexpected filesystem
+    objects or following symlinks during backup execution.
     """
     if not source_path.exists():
         raise BackupInvariantViolationError(f"Source file missing at execution time: {source_path}")
