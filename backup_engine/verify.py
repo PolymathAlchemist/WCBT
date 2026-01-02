@@ -278,12 +278,7 @@ def _verify_manifest(
             # Fall back to the raw string if it isn't under run_root
             rel_path = str(Path(destination_path))
 
-        try:
-            if not dest_path.exists():
-                raise FileNotFoundError(str(dest_path))
-            size_bytes = dest_path.stat().st_size
-            digest_hex = compute_digest(dest_path, hash_algorithm)
-        except OSError as exc:
+        if not dest_path.exists():
             failed += 1
             records.append(
                 {
@@ -299,7 +294,52 @@ def _verify_manifest(
                 algorithm=hash_algorithm,
                 digest_hex=None,
                 size_bytes=None,
+                error="File not found for verification.",
+            )
+            continue
+
+        try:
+            size_bytes = dest_path.stat().st_size
+            digest_hex = compute_digest(dest_path, hash_algorithm)
+        except OSError as exc:
+            failed += 1
+            records.append(
+                {
+                    "schema": "wcbt_verify_record_v1",
+                    "run_id": str(payload.get("run_id", "")),
+                    "status": "unreadable",
+                    "path": rel_path,
+                }
+            )
+            _write_verification_fields(
+                exec_result,
+                outcome=VerificationOutcome.FAILED,
+                algorithm=hash_algorithm,
+                digest_hex=None,
+                size_bytes=None,
                 error=f"{type(exc).__name__}: {exc}",
+            )
+            continue
+
+        expected_digest = _extract_expected_digest_hex(op, exec_result)
+
+        if expected_digest is not None and digest_hex != expected_digest:
+            failed += 1
+            records.append(
+                {
+                    "schema": "wcbt_verify_record_v1",
+                    "run_id": str(payload.get("run_id", "")),
+                    "status": "hash_mismatch",
+                    "path": rel_path,
+                }
+            )
+            _write_verification_fields(
+                exec_result,
+                outcome=VerificationOutcome.FAILED,
+                algorithm=hash_algorithm,
+                digest_hex=digest_hex,
+                size_bytes=size_bytes,
+                error="Digest mismatch.",
             )
             continue
 
@@ -312,16 +352,6 @@ def _verify_manifest(
                 "path": rel_path,
             }
         )
-        _write_verification_fields(
-            exec_result,
-            outcome=VerificationOutcome.VERIFIED,
-            algorithm=hash_algorithm,
-            digest_hex=digest_hex,
-            size_bytes=size_bytes,
-            error=None,
-        )
-
-        verified += 1
         _write_verification_fields(
             exec_result,
             outcome=VerificationOutcome.VERIFIED,
@@ -379,6 +409,38 @@ def _index_execution_results(execution: Any) -> dict[int, dict[str, Any]]:
         if isinstance(idx, int):
             indexed[idx] = item
     return indexed
+
+
+def _extract_expected_digest_hex(
+    op: Mapping[str, Any], exec_result: Mapping[str, Any]
+) -> str | None:
+    # Prefer explicit "expected" keys
+    for key in (
+        "expected_digest_hex",
+        "expected_hash_hex",
+        "expected_sha256",
+        "expected_sha256_hex",
+    ):
+        value = exec_result.get(key)
+        if isinstance(value, str) and value:
+            return value
+    for key in (
+        "expected_digest_hex",
+        "expected_hash_hex",
+        "expected_sha256",
+        "expected_sha256_hex",
+    ):
+        value = op.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    # Optional compatibility: if the planned op carries a digest under a common name
+    for key in ("sha256", "sha256_hex", "digest_hex"):
+        value = op.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    return None
 
 
 def _extract_destination_path(op: Mapping[str, Any], exec_result: Mapping[str, Any]) -> str | None:
