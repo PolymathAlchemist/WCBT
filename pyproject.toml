@@ -7,7 +7,9 @@ readme = "README.md"
 license = { text = "Proprietary" }
 authors = [{ name = "Eric J. Turman" }]
 
-dependencies = []
+dependencies = [
+    "pyside6>=6.10.1",
+]
 
 [build-system]
 requires = ["hatchling>=1.25"]
@@ -26,6 +28,12 @@ wcbt = "wcbt.cli:main"
 # -------------------------
 # Tooling Configuration
 # -------------------------
+
+[[tool.mypy.overrides]]
+module = [
+    "gui.*",
+]
+ignore_errors = true
 
 [tool.ruff]
 target-version = "py311"
