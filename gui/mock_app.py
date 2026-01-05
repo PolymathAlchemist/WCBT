@@ -52,9 +52,19 @@ class MockApp(QWidget):
         tabs = QTabWidget()
         tabs.addTab(RunTab(jobs), "Run")
         tabs.addTab(RestoreTab(jobs, runs), "Restore")
-        tabs.addTab(AuthoringTab(jobs), "Authoring")
+        self.authoring_tab = AuthoringTab(jobs)
+        tabs.addTab(self.authoring_tab, "Authoring")
 
         root.addWidget(tabs, 1)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """Shutdown background workers before closing the application."""
+        try:
+            # If we stored the authoring tab instance, shut it down.
+            if hasattr(self, "authoring_tab"):
+                self.authoring_tab.shutdown()  # type: ignore[attr-defined]
+        finally:
+            super().closeEvent(event)
 
 
 def main() -> int:
