@@ -12,7 +12,7 @@ import sys
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QTabWidget, QVBoxLayout, QWidget
 
 from gui.mock_data import seed_jobs, seed_runs
-from gui.tabs.mock_authoring_tab import AuthoringTab
+from gui.tabs.authoring_tab import AuthoringTab
 from gui.tabs.mock_restore_tab import RestoreTab
 from gui.tabs.mock_run_tab import RunTab
 

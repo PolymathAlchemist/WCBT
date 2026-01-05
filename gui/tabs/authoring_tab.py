@@ -1,11 +1,14 @@
 """
-Mock Authoring tab.
+Authoring tab for WCBT GUI.
 
-Hybrid authoring model scaffolding:
-- Item-first UX (future): tree of real structure, include/exclude overrides
-- Advanced refinement (now): pattern lists (include/exclude) with safe editing
+This tab provides the user interface for editing per-job include/exclude rules.
+Persistence is engine-owned and backed by the ProfileStore.
 
-This module intentionally remains UI-only. No WCBT core wiring.
+Notes
+-----
+- Switching jobs discards unsaved changes by design.
+- Exclude rules take precedence during evaluation.
+- All persistence occurs off the UI thread.
 """
 
 from __future__ import annotations
