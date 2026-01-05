@@ -41,9 +41,21 @@ class ProfileStoreWorker(QObject):
     unknown_job = Signal(str)  # job_id
     error = Signal(str, str)  # job_id, message
 
+    jobs_loaded = Signal(object)  # list[JobSummary]
+
     def __init__(self, profile_name: str, data_root: Path | None) -> None:
         super().__init__()
         self._store = open_profile_store(profile_name=profile_name, data_root=data_root)
+
+    @Slot()
+    def list_jobs(self) -> None:
+        """List known jobs and emit results."""
+        try:
+            jobs = list(self._store.list_jobs())
+        except Exception as e:
+            self.error.emit("", str(e))
+            return
+        self.jobs_loaded.emit(jobs)
 
     @Slot(str)
     def load_rules(self, job_id: str) -> None:
@@ -83,12 +95,14 @@ class ProfileStoreAdapter(QObject):
     # Requests (GUI emits these; wired as queued connections to worker slots)
     request_load_rules = Signal(str)
     request_save_rules = Signal(str, str, object)
+    request_list_jobs = Signal()
 
     # Results (worker emits; adapter forwards)
     rules_loaded = Signal(str, object)  # job_id, GuiRuleSet
     rules_saved = Signal(str)  # job_id
     unknown_job = Signal(str)  # job_id
     error = Signal(str, str)  # job_id, message
+    jobs_loaded = Signal(object)  # list[JobSummary]
 
     def __init__(self, profile_name: str, data_root: Path | None = None) -> None:
         super().__init__()
@@ -104,12 +118,16 @@ class ProfileStoreAdapter(QObject):
         self.request_save_rules.connect(
             self._worker.save_rules, type=Qt.ConnectionType.QueuedConnection
         )
+        self.request_list_jobs.connect(
+            self._worker.list_jobs, type=Qt.ConnectionType.QueuedConnection
+        )
 
         # Forward results to GUI.
         self._worker.rules_loaded.connect(self.rules_loaded)
         self._worker.rules_saved.connect(self.rules_saved)
         self._worker.unknown_job.connect(self.unknown_job)
         self._worker.error.connect(self.error)
+        self._worker.jobs_loaded.connect(self.jobs_loaded)
 
         self._thread.start()
 

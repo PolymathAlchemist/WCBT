@@ -7,13 +7,13 @@ Note: Reformatted using PyCharm Markdown table formatter.
 
 ---
 
-cloc|github.com/AlDanial/cloc v 2.06
---- | ---
+| cloc | github.com/AlDanial/cloc v 2.06 |
+|------|---------------------------------|
 
 | File                                                             |    blank |  comment |     code |
 |:-----------------------------------------------------------------|---------:|---------:|---------:|
 | .\gui\mock_wcbt_gui.py                                           |      114 |       31 |      442 |
-| .\gui\tabs\authoring_tab.py                                      |      111 |       49 |      386 |
+| .\gui\tabs\authoring_tab.py                                      |      117 |       52 |      412 |
 | .\backup_engine\verify.py                                        |       98 |      165 |      372 |
 | .\backup_engine\restore\service.py                               |       69 |      131 |      292 |
 | .\backup_engine\restore\verify.py                                |       68 |      116 |      252 |
@@ -26,6 +26,7 @@ cloc|github.com/AlDanial/cloc v 2.06
 | .\gui\tabs\mock_restore_tab.py                                   |       45 |        5 |      175 |
 | .\backup_engine\manifest_store.py                                |       67 |      173 |      160 |
 | .\backup_engine\backup\execute.py                                |       54 |      143 |      155 |
+| .\README.md                                                      |       68 |        0 |      140 |
 | .\tests\audit_docstrings.py                                      |       57 |       87 |      128 |
 | .\tools\audit_docstrings.py                                      |       57 |       86 |      127 |
 | .\tests\test_profile_lock.py                                     |       31 |        0 |      126 |
@@ -34,18 +35,17 @@ cloc|github.com/AlDanial/cloc v 2.06
 | .\tools\minecraft\wcbt_fabric_probe_and_stage.bat                |       25 |       43 |      115 |
 | .\backup_engine\restore\execute.py                               |       52 |      130 |      113 |
 | .\backup_engine\paths_and_safety.py                              |       64 |      154 |      110 |
-| .\README.md                                                      |       48 |        0 |      106 |
 | .\wcbt\README.md                                                 |       48 |        0 |      106 |
 | .\backup_engine\backup\plan.py                                   |       60 |      143 |      100 |
 | .\tests\test_cli_exit_codes.py                                   |       28 |        1 |       96 |
 | .\backup_engine\backup\scan.py                                   |       38 |       70 |       95 |
 | .\gui\tabs\mock_run_tab.py                                       |       26 |        4 |       95 |
+| .\gui\adapters\profile_store_adapter.py                          |       30 |       22 |       85 |
 | .\backup_engine\profile_store\sqlite_store.py                    |       34 |       69 |       84 |
 | .\tests\test_copy_execution.py                                   |       27 |        0 |       84 |
 | .\tests\test_restore_conflicts.py                                |       16 |        1 |       83 |
 | .\tests\test_end_to_end_backup_restore.py                        |       24 |       10 |       81 |
 | .\tests\test_restore_verify_stage.py                             |       22 |        1 |       81 |
-| .\gui\adapters\profile_store_adapter.py                          |       28 |       21 |       70 |
 | .\UpdateAndRun.bat                                               |       11 |        8 |       69 |
 | .\gui\mock_data.py                                               |       14 |        5 |       69 |
 | .\backup_engine\restore\data_models.py                           |       29 |       95 |       65 |
@@ -109,4 +109,4 @@ cloc|github.com/AlDanial/cloc v 2.06
 | .\gui\adapters\__init__.py                                       |        2 |        9 |        0 |
 | .\gui\tabs\__init__.py                                           |        0 |        1 |        0 |
 | --------                                                         | -------- | -------- | -------- |
-| SUM:                                                             |     2477 |     3064 |     7302 |
+| SUM:                                                             |     2505 |     3068 |     7377 |

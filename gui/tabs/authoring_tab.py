@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
 
 from gui.adapters.profile_store_adapter import GuiRuleSet, ProfileStoreAdapter
 from gui.dialogs.mock_rule_editor_dialog import RuleEditorDialog
-from gui.mock_data import MockJob
 
 
 def _mono() -> QFont:
@@ -66,10 +65,9 @@ class AuthoringTab(QWidget):
     - All persistence occurs off the UI thread.
     """
 
-    def __init__(self, jobs: list[MockJob]) -> None:
+    def __init__(self) -> None:
         super().__init__()
 
-        self._jobs = jobs
         self._active_job_id: str | None = None
 
         # Used to seed the store for unknown jobs (first time seen).
@@ -81,6 +79,7 @@ class AuthoringTab(QWidget):
         # Engine-backed store via a Qt adapter (no CLI calls).
         # v1 uses the default profile; we can plumb this from the app later.
         self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
+        self._store.jobs_loaded.connect(self._on_jobs_loaded)
         self._store.rules_loaded.connect(self._on_rules_loaded)
         self._store.rules_saved.connect(self._on_rules_saved)
         self._store.unknown_job.connect(self._on_unknown_job)
@@ -103,8 +102,7 @@ class AuthoringTab(QWidget):
         top_layout.setContentsMargins(0, 0, 0, 0)
 
         self.job_combo = QComboBox()
-        for job in jobs:
-            self.job_combo.addItem(job.name, job.job_id)
+        self.job_combo.setEnabled(False)  # enabled after jobs arrive from store
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #777; padding-left: 6px;")
@@ -233,9 +231,10 @@ class AuthoringTab(QWidget):
         self._sync_action_enabled_state()
         self._sync_dirty_state()
 
-        # Kick initial load once, safely.
+        # Kick initial job listing (store-backed), safely.
         try:
-            self._on_job_changed()
+            self._set_status("Loading jobs…")
+            self._store.request_list_jobs.emit()
         except Exception:
             self._store.shutdown()
             raise
@@ -445,7 +444,7 @@ class AuthoringTab(QWidget):
         if job_id is None:
             return
 
-        name = next((j.name for j in self._jobs if j.job_id == job_id), job_id)
+        name = str(self.job_combo.currentText()).strip() or job_id
         snap = self._snapshot_from_ui()
         rules = GuiRuleSet(include=tuple(snap.include), exclude=tuple(snap.exclude))
 
@@ -493,7 +492,7 @@ class AuthoringTab(QWidget):
         self._apply_snapshot_to_ui(default)
         self._baseline_snapshot = default
 
-        name = next((j.name for j in self._jobs if j.job_id == job_id), job_id)
+        name = str(self.job_combo.currentText()).strip() or job_id
         rules = GuiRuleSet(include=tuple(default.include), exclude=tuple(default.exclude))
 
         self._set_status("Initializing…")
@@ -502,12 +501,48 @@ class AuthoringTab(QWidget):
         self._store.request_save_rules.emit(job_id, name, rules)
 
     def _on_store_error(self, job_id: str, message: str) -> None:
-        if self._active_job_id != job_id:
+        if job_id and self._active_job_id != job_id:
             return
 
         self._set_status("Error")
         QMessageBox.critical(self, "Profile Store Error", message)
         self._sync_dirty_state()
+
+    def _on_jobs_loaded(self, jobs_obj: object) -> None:
+        jobs = jobs_obj
+        # We intentionally keep this loose to avoid importing engine models into the GUI tab.
+        # Adapter emits a list of JobSummary.
+        try:
+            job_items = list(jobs)
+        except Exception:
+            self._set_status("Error")
+            QMessageBox.critical(self, "Profile Store Error", "Invalid job list from store.")
+            return
+
+        self.job_combo.blockSignals(True)
+        try:
+            self.job_combo.clear()
+            for job_summary in job_items:
+                job_id = str(getattr(job_summary, "job_id"))
+                name = str(getattr(job_summary, "name"))
+                self.job_combo.addItem(name, job_id)
+
+        finally:
+            self.job_combo.blockSignals(False)
+
+        if self.job_combo.count() == 0:
+            self._active_job_id = None
+            self.job_combo.setEnabled(False)
+            self._set_status("No jobs yet")
+            self.dirty_label.setText("")
+            self.btn_save.setEnabled(False)
+            self.btn_revert.setEnabled(False)
+            return
+
+        self.job_combo.setEnabled(True)
+
+        # Trigger load for the currently selected job.
+        self._on_job_changed()
 
     # ---------- Rename (UI-only in v1) ----------
     def _job_name_exists(self, name: str) -> bool:
