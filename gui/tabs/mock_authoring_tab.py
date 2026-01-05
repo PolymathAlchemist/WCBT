@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui.adapters.profile_store_adapter import GuiRuleSet, ProfileStoreAdapter
 from gui.dialogs.mock_rule_editor_dialog import RuleEditorDialog
 from gui.mock_data import MockJob
 
@@ -61,8 +62,16 @@ class AuthoringTab(QWidget):
     def __init__(self, jobs: list[MockJob]) -> None:
         super().__init__()
         self._jobs = jobs
-        self._saved_by_job_id: dict[str, PatternSnapshot] = {}
         self._active_job_id: str | None = None
+        self._default_snapshot: PatternSnapshot | None = None
+
+        # Engine-backed store via a Qt adapter (no CLI calls).
+        # v1 uses the default profile; we can plumb this from the app later.
+        self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
+        self._store.rules_loaded.connect(self._on_rules_loaded)
+        self._store.rules_saved.connect(self._on_rules_saved)
+        self._store.unknown_job.connect(self._on_unknown_job)
+        self._store.error.connect(self._on_store_error)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -170,6 +179,7 @@ class AuthoringTab(QWidget):
         self.btn_save.clicked.connect(self._save_current)
         self.btn_revert.clicked.connect(self._revert_current)
         self.job_combo.currentIndexChanged.connect(self._on_job_changed)
+        self._on_job_changed()
         self.btn_rename.clicked.connect(self._rename_job)
         self.btn_duplicate.clicked.connect(self._duplicate_job)
         self.btn_delete_job.clicked.connect(self._delete_job)
@@ -191,6 +201,8 @@ class AuthoringTab(QWidget):
                 "__pycache__/**",
             ],
         )
+        self._default_snapshot = self._snapshot_from_ui()
+
         editor_row.addWidget(self._exclude["box"], 1)
 
         hint = QLabel(
@@ -379,7 +391,6 @@ class AuthoringTab(QWidget):
         self._sync_dirty_state()
 
     # ---------- Job + Save/Revert (mock-only) ----------
-
     def _current_job_id(self) -> str:
         return str(self.job_combo.currentData())
 
@@ -419,34 +430,83 @@ class AuthoringTab(QWidget):
     def _on_job_changed(self) -> None:
         new_job_id = self._current_job_id()
 
-        # Save nothing automatically. Switching jobs discards unsaved changes by design (mock).
-        # We can add a confirm dialog later if it becomes annoying.
+        # Switching jobs discards unsaved changes by design (current UX).
         self._active_job_id = new_job_id
 
-        # If this job has no saved state yet, seed from current defaults once.
-        if new_job_id not in self._saved_by_job_id:
-            self._saved_by_job_id[new_job_id] = self._snapshot_from_ui()
+        # Disable Save/Revert until load completes.
+        self._set_status("Loading…")
+        self.btn_save.setEnabled(False)
+        self.btn_revert.setEnabled(False)
 
-        self._apply_snapshot_to_ui(self._saved_by_job_id[new_job_id])
+        self._store.request_load_rules.emit(new_job_id)
 
     def _save_current(self) -> None:
         job_id = self._active_job_id
         if job_id is None:
             return
-        self._saved_by_job_id[job_id] = self._snapshot_from_ui()
-        self._sync_dirty_state()
+
+        name = next((j.name for j in self._jobs if j.job_id == job_id), job_id)
+        snap = self._snapshot_from_ui()
+        rules = GuiRuleSet(include=tuple(snap.includes), exclude=tuple(snap.excludes))
+
+        self._set_status("Saving…")
+        self.btn_save.setEnabled(False)
+        self._store.request_save_rules.emit(job_id, name, rules)
 
     def _revert_current(self) -> None:
         job_id = self._active_job_id
         if job_id is None:
             return
-        saved = self._saved_by_job_id.get(job_id)
-        if saved is None:
+
+        self._set_status("Reverting…")
+        self.btn_save.setEnabled(False)
+        self.btn_revert.setEnabled(False)
+        self._store.request_load_rules.emit(job_id)
+
+    def _on_rules_loaded(self, job_id: str, rules_obj: object) -> None:
+        if self._active_job_id != job_id:
             return
-        self._apply_snapshot_to_ui(saved)
+
+        rules = rules_obj
+        assert isinstance(rules, GuiRuleSet)
+
+        snap = PatternSnapshot(includes=list(rules.include), excludes=list(rules.exclude))
+        self._apply_snapshot_to_ui(snap)
+        self._set_status("Loaded")
+        self._sync_dirty_state()
+
+    def _on_rules_saved(self, job_id: str) -> None:
+        if self._active_job_id != job_id:
+            return
+
+        self._set_status("Saved")
+        self._sync_dirty_state()
+
+    def _on_unknown_job(self, job_id: str) -> None:
+        """Seed the store with defaults the first time we see an unknown job_id."""
+        if self._active_job_id != job_id:
+            return
+
+        default = self._default_snapshot or self._snapshot_from_ui()
+        self._apply_snapshot_to_ui(default)
+
+        name = next((j.name for j in self._jobs if j.job_id == job_id), job_id)
+        rules = GuiRuleSet(include=tuple(default.includes), exclude=tuple(default.excludes))
+
+        self._set_status("Initializing…")
+        self.btn_save.setEnabled(False)
+        self.btn_revert.setEnabled(False)
+        self._store.request_save_rules.emit(job_id, name, rules)
+
+    def _on_store_error(self, job_id: str, message: str) -> None:
+        if self._active_job_id != job_id:
+            return
+
+        self._set_status("Error")
+        QMessageBox.critical(self, "Profile Store Error", message)
+        self._sync_dirty_state()
 
     # ---------- Job lifecycle (mock-only) ----------
-
     def _job_name_exists(self, name: str) -> bool:
         name_l = name.strip().lower()
         for i in range(self.job_combo.count()):
@@ -558,3 +618,10 @@ class AuthoringTab(QWidget):
         if self.job_combo.count() > 0:
             self.job_combo.setCurrentIndex(min(idx, self.job_combo.count() - 1))
             self._on_job_changed()
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        """Ensure the store worker thread is stopped when the widget closes."""
+        try:
+            self._store.shutdown()
+        finally:
+            super().closeEvent(event)
