@@ -7,12 +7,12 @@ Note: Reformatted using PyCharm Markdown table formatter.
 
 ---
 
-cloc|github.com/AlDanial/cloc v 2.06
---- | ---
+| cloc | github.com/AlDanial/cloc v 2.06 |
+|------|---------------------------------|
 
 | File                                                             |    blank |  comment |     code |
 |:-----------------------------------------------------------------|---------:|---------:|---------:|
-| .\gui\tabs\mock_authoring_tab.py                                 |      126 |       51 |      450 |
+| .\gui\tabs\authoring_tab.py                                      |      126 |       54 |      450 |
 | .\gui\mock_wcbt_gui.py                                           |      114 |       31 |      442 |
 | .\backup_engine\verify.py                                        |       98 |      165 |      372 |
 | .\backup_engine\restore\service.py                               |       69 |      131 |      292 |
@@ -97,6 +97,7 @@ cloc|github.com/AlDanial/cloc v 2.06
 | .\.idea\inspectionProfiles\profiles_settings.xml                 |        0 |        0 |        6 |
 | .\wcbt\__main__.py                                               |       10 |       19 |        6 |
 | .\backup_engine\exceptions.py                                    |        9 |        5 |        5 |
+| .\cloc-by-file.md                                                |        4 |        0 |        5 |
 | .\backup_engine\profile_store\errors.py                          |        7 |        4 |        4 |
 | .\sync-dev.bat                                                   |        0 |        0 |        4 |
 | .\sync-full.bat                                                  |        0 |        0 |        3 |
@@ -108,4 +109,4 @@ cloc|github.com/AlDanial/cloc v 2.06
 | .\gui\adapters\__init__.py                                       |        2 |        9 |        0 |
 | .\gui\tabs\__init__.py                                           |        0 |        1 |        0 |
 | --------                                                         | -------- | -------- | -------- |
-| SUM:                                                             |     2487 |     3064 |     7354 |
+| SUM:                                                             |     2491 |     3067 |     7359 |
