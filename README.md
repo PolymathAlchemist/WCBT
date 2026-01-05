@@ -10,6 +10,20 @@ WCBT has been generalized without abandoning those safety constraints.
 
 ---
 
+## What WCBT Is (and Is Not)
+
+**WCBT is:**
+- A correctness-first backup and restore engine
+- Deterministic and test-driven
+- Designed for inspection, auditability, and recovery confidence
+
+**WCBT is not:**
+- A convenience wrapper around `rsync`
+- A silent or "best-effort" backup tool
+- A UI-first consumer application (yet)
+
+---
+
 ## Core Principles (Non‑Negotiable)
 
 - **Artifact-first behavior**
@@ -34,107 +48,146 @@ WCBT has been generalized without abandoning those safety constraints.
 
 ---
 
-## Pipeline Overview
+## Repository Layout (High-Level)
 
-### 1. Backup
-- Builds an explicit **plan** of expected operations.
-- Executes copy operations deterministically.
-- Writes execution artifacts regardless of success or failure.
-
-### 2. Restore
-- Applies **add-only semantics**.
-- Never overwrites existing files.
-- Conflicts are written as artifacts and surfaced via exit codes.
-
-### 3. Verify
-Verification validates expected destinations and emits three artifacts:
-
-- `verify_report.json`
-  - Machine-readable summary
-- `verify_summary.txt`
-  - Human-readable report
-- `verify_report.jsonl`
-  - Deterministic, one-record-per-expected-file stream
-
-Verification always writes artifacts, even on failure.
+```
+wcbt/
+├── backup_engine/        # Core backup / restore / verify engine
+│   ├── backup/
+│   ├── restore/
+│   ├── verify/
+│   └── data_models.py
+├── gui/                  # GUI (PySide) — currently mid-integration
+│   ├── tabs/
+│   ├── dialogs/
+│   └── adapters/
+├── tests/                # Artifact-driven test suite
+├── wcbt/                 # CLI entrypoints
+└── README.md
+```
 
 ---
 
-## Verify Classification (v1.1)
+## Installation
 
-Verification currently classifies each expected file as one of:
+### Requirements
+
+- Python **3.11+**
+- `uv` (recommended) or `pip`
+
+### Clone
+
+```bash
+git clone https://github.com/PolymathAlchemist/WCBT.git
+cd WCBT
+```
+
+### Install dependencies (recommended via uv)
+
+```bash
+uv sync --dev
+```
+
+Alternatively (pip):
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Running WCBT (CLI)
+
+WCBT is currently CLI-first.
+
+### Backup
+
+```bash
+uv run wcbt backup <source> <destination>
+```
+
+### Restore
+
+```bash
+uv run wcbt restore <run-directory> <destination>
+```
+
+Restore is **add-only**. Existing files are never overwritten.
+Conflicts are written as artifacts and surfaced via exit codes.
+
+### Verify
+
+```bash
+uv run wcbt verify <run-directory>
+```
+
+Verification always produces artifacts, even on failure.
+
+---
+
+## Verification Artifacts
+
+Verification emits three deterministic artifacts:
+
+- `verify_report.json`
+  - Machine-readable summary
+- `verify_report.jsonl`
+  - One record per expected file (ordered, deterministic)
+- `verify_summary.txt`
+  - Human-readable summary
+
+### Verification Status Values
+
+Each JSONL record includes a `status` field:
 
 - `ok` — exists, readable, and matches expected hash (if available)
 - `missing` — expected destination does not exist
 - `unreadable` — exists but cannot be read or hashed
-- `hash_mismatch` — exists and readable, but content differs from expected hash
+- `hash_mismatch` — exists and readable, but content differs
 
-JSONL records are:
-- deterministic
-- ordered by expected operations
-- suitable for future drift analysis and classification
+### Exit Codes
 
----
+- `0` — all records are `ok`
+- non-zero — any non-`ok` status detected
 
-## Exit Codes
-
-- `0` — all verification records are `ok`
-- non‑zero — any non‑ok condition detected
-
-Exit codes never suppress artifact generation.
+Exit codes **never suppress artifact generation**.
 
 ---
 
-## Status
+## GUI Status
 
-- Backup pipeline: **complete**
-- Restore pipeline: **complete**
-- Verify pipeline: **complete**
-  - JSON, text, and JSONL artifacts
-  - Missing, unreadable, and hash mismatch classification
-- Tooling gates:
-  - `ruff`, `mypy`, `pytest`, coverage all passing
+A PySide-based GUI is under active development.
 
----
+Current state:
+- Authoring tab is **engine-backed** and persists to SQLite
+- Run and Restore tabs are still mocked
+- GUI uses a thin adapter layer (no CLI calls)
 
-## Verify an archive run
+The GUI is not yet considered stable for end users.
 
-`wcbt verify` validates an already-materialized backup run by hashing archived files and recording deterministic results.
+To run the GUI (development):
 
-### Outputs (artifact-first)
-
-After running verify, the run directory will contain:
-
-- `manifest.json` (updated atomically): per-operation verification fields are written into `execution.results[*].verification`
-- `verify_report.json`: deterministic summary JSON
-- `verify_report.jsonl`: line-delimited per-file records (one record per verified/failed file)
-- `verify_summary.txt`: human-readable summary
-
-### Status values
-
-Each JSONL record includes a `status` field with one of:
-
-- `ok`           : file exists, readable, and digest matches the expected value (when provided)
-- `missing`      : destination file not found
-- `unreadable`   : destination file exists but could not be read/hashed
-- `hash_mismatch`: digest computed but does not match the expected digest
-
-### Deterministic status counts
-
-`verify_report.json` includes a `status_counts` object, providing a stable aggregation of record statuses:
-
-```json
-"status_counts": {
-  "ok": 123,
-  "missing": 0,
-  "unreadable": 0,
-  "hash_mismatch": 1
-}
+```bash
+uv run python -m gui.mock_app
 ```
 
-The same counts are also surfaced in `verify_summary.txt` in a fixed order for testability.
+---
+
+## Development Gates
+
+Before committing changes, run:
+
+```bash
+uv run ruff format .
+uv run ruff check .
+uv run mypy .
+uv run pytest -q
+```
+
+The project treats green gates as a hard requirement.
 
 ---
+
 ## Philosophy
 
 WCBT is intentionally conservative.
@@ -152,3 +205,4 @@ clearly, and permanently**.
 ## License
 
 License: To be determined
+
