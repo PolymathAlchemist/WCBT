@@ -1,34 +1,25 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 
-REM ------------------------------------------------------------
-REM WCBT cloc by-file report (Markdown)
-REM Ensures execution from project root
-REM ------------------------------------------------------------
+cd /d "%~dp0" || exit /b 1
 
-REM Move to project root (parent of tools)
-cd /d "%~dp0\.."
+set "OUT=cloc-by-file.md"
 
-set RAW=raw-output_cloc-by-file.md
-set CLEAN=cloc-by-file.md
+REM Overwrite the output with a simple Markdown header
+(
+  echo # cloc by-file report
+  echo.
+  echo Generated via:
+  echo `cloc --vcs=git --by-file --md --hide-rate`
+  echo.
+  echo Note: Reformatted using PyCharm Markdown table formatter.
+  echo.
+  echo ---
+  echo.
+) > "%OUT%"
 
-REM Step 1: generate raw Markdown from cloc
-cloc --vcs=git --by-file --md --hide-rate > %RAW%
+REM Append cloc output directly (no .tmp)
+cloc --vcs=git --by-file --md --hide-rate >> "%OUT%" 2>>&1
 
-REM Step 2: reformat for strict Markdown parsers (PyCharm)
-powershell -NoProfile -Command ^
-  "$lines = Get-Content '%RAW%'; ^
-   $out = @(); ^
-   foreach ($line in $lines) { ^
-     if ($line -match '^cloc\|github') { continue } ^
-     if ($line -match '^--- \| ---') { continue } ^
-     if ($line -match '^\|[- ]+\|') { $out += $line; continue } ^
-     if ($line -match '^\|') { $out += $line; continue } ^
-   }; ^
-   $out | Set-Content '%CLEAN%'"
-
-echo.
-echo cloc reports generated at project root:
-echo   %RAW%
-echo   %CLEAN%
+echo Wrote "%OUT%"
 echo.
