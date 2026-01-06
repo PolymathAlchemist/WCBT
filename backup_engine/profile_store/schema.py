@@ -11,9 +11,15 @@ from __future__ import annotations
 SCHEMA_V1 = """
 PRAGMA journal_mode = WAL;
 
+CREATE TABLE IF NOT EXISTS profile_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
-    job_id TEXT PRIMARY KEY,
-    name   TEXT NOT NULL
+    job_id     TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    is_deleted INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS rules (

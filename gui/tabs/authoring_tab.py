@@ -16,7 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QFont,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -67,8 +71,10 @@ class AuthoringTab(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._store: ProfileStoreAdapter | None = None
 
         self._active_job_id: str | None = None
+        self._pending_select_job_id: str | None = None
 
         # Used to seed the store for unknown jobs (first time seen).
         self._default_snapshot: PatternSnapshot | None = None
@@ -84,6 +90,9 @@ class AuthoringTab(QWidget):
         self._store.rules_saved.connect(self._on_rules_saved)
         self._store.unknown_job.connect(self._on_unknown_job)
         self._store.error.connect(self._on_store_error)
+        self._store.job_created.connect(self._on_job_created)
+        self._store.job_renamed.connect(self._on_job_renamed)
+        self._store.job_deleted.connect(self._on_job_deleted)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -116,26 +125,24 @@ class AuthoringTab(QWidget):
         self.btn_revert.setToolTip("Revert to last saved rules for this job.")
 
         self.btn_rename = QPushButton("Rename…")
-        self.btn_rename.setToolTip(
-            "Rename this job (UI only for v1). Archives and history are not modified."
-        )
+        self.btn_rename.setToolTip("Rename this job.")
 
-        self.btn_duplicate = QPushButton("Duplicate…")
-        self.btn_duplicate.setToolTip("Not implemented yet (engine-backed persistence v1).")
+        self.btn_new_job = QPushButton("New…")
+        self.btn_new_job.setToolTip("Create a new job.")
+
         self.btn_delete_job = QPushButton("Delete…")
-        self.btn_delete_job.setToolTip("Not implemented yet (engine-backed persistence v1).")
+        self.btn_delete_job.setToolTip("Delete this job (soft delete).")
 
-        # Disable job lifecycle actions until the store supports them.
-        self.btn_duplicate.setEnabled(False)
-        self.btn_delete_job.setEnabled(False)
+        self.btn_new_job.clicked.connect(self._new_job)
+        self.btn_delete_job.clicked.connect(self._delete_job)
 
         top_layout.addWidget(QLabel("Job:"))
         top_layout.addWidget(self.job_combo)
         top_layout.addItem(QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum))
         top_layout.addWidget(self.status_label)
         top_layout.addWidget(self.dirty_label)
+        top_layout.addWidget(self.btn_new_job)
         top_layout.addWidget(self.btn_rename)
-        top_layout.addWidget(self.btn_duplicate)
         top_layout.addWidget(self.btn_delete_job)
         top_layout.addWidget(self.btn_revert)
         top_layout.addWidget(self.btn_save)
@@ -537,14 +544,46 @@ class AuthoringTab(QWidget):
             self.dirty_label.setText("")
             self.btn_save.setEnabled(False)
             self.btn_revert.setEnabled(False)
+
+            self.btn_new_job.setEnabled(True)
+            self.btn_rename.setEnabled(False)
+            self.btn_delete_job.setEnabled(False)
             return
 
+        # Restore enabled-state now that jobs are loaded.
         self.job_combo.setEnabled(True)
+        self.btn_new_job.setEnabled(True)
+        self.btn_rename.setEnabled(True)
+        self.btn_delete_job.setEnabled(True)
+
+        # If we have a pending selection (new/renamed), select it.
+        if self._pending_select_job_id is not None:
+            target = self._pending_select_job_id
+            self._pending_select_job_id = None
+            for i in range(self.job_combo.count()):
+                if str(self.job_combo.itemData(i)) == target:
+                    self.job_combo.setCurrentIndex(i)
+                    break
 
         # Trigger load for the currently selected job.
         self._on_job_changed()
 
-    # ---------- Rename (UI-only in v1) ----------
+    def _on_job_created(self, job_id: str) -> None:
+        # Refresh and select newly created job.
+        self._store.request_list_jobs.emit()
+        self._pending_select_job_id = job_id
+
+    def _on_job_renamed(self, job_id: str) -> None:
+        # Refresh job list (names come from store).
+        self._store.request_list_jobs.emit()
+        self._pending_select_job_id = job_id
+
+    def _on_job_deleted(self, job_id: str) -> None:
+        # Refresh; selection will fall back to first job if any.
+        self._store.request_list_jobs.emit()
+        self._pending_select_job_id = None
+
+    # ---------- Job lifecycle (engine-backed) ----------
     def _job_name_exists(self, name: str) -> bool:
         name_l = name.strip().lower()
         for i in range(self.job_combo.count()):
@@ -552,7 +591,30 @@ class AuthoringTab(QWidget):
                 return True
         return False
 
+    def _new_job(self) -> None:
+        text, ok = QInputDialog.getText(self, "New job", "Job name:", text="")
+        if not ok:
+            return
+        name = text.strip()
+        if not name:
+            QMessageBox.warning(self, "New job", "Job name cannot be empty.")
+            return
+        if self._job_name_exists(name):
+            QMessageBox.warning(self, "New job", "A job with that name already exists.")
+            return
+
+        self._set_status("Creating…")
+        self.job_combo.setEnabled(False)
+        self.btn_new_job.setEnabled(False)
+        self.btn_rename.setEnabled(False)
+        self.btn_delete_job.setEnabled(False)
+        self._store.request_create_job.emit(name)
+
     def _rename_job(self) -> None:
+        job_id = self._active_job_id
+        if job_id is None:
+            return
+
         current_name = str(self.job_combo.currentText()).strip()
         text, ok = QInputDialog.getText(self, "Rename job", "Job name:", text=current_name)
         if not ok:
@@ -567,13 +629,41 @@ class AuthoringTab(QWidget):
             QMessageBox.warning(self, "Rename job", "A job with that name already exists.")
             return
 
-        self.job_combo.setItemText(self.job_combo.currentIndex(), new_name)
+        self._set_status("Renaming…")
+        self.job_combo.setEnabled(False)
+        self.btn_new_job.setEnabled(False)
+        self.btn_rename.setEnabled(False)
+        self.btn_delete_job.setEnabled(False)
+        self._store.request_rename_job.emit(job_id, new_name)
+
+    def _delete_job(self) -> None:
+        job_id = self._active_job_id
+        if job_id is None:
+            return
+
+        name = str(self.job_combo.currentText()).strip() or job_id
+        res = QMessageBox.question(
+            self,
+            "Delete job",
+            f"Delete job '{name}'?\n\nThis is a soft delete. Existing archives are not modified.",
+        )
+        if res != QMessageBox.Yes:
+            return
+
+        self._set_status("Deleting…")
+        self.job_combo.setEnabled(False)
+        self.btn_new_job.setEnabled(False)
+        self.btn_rename.setEnabled(False)
+        self.btn_delete_job.setEnabled(False)
+        self._store.request_delete_job.emit(job_id)
 
     def shutdown(self) -> None:
-        """Stop background workers owned by this tab."""
+        """Shut down background worker threads cleanly."""
+        if self._store is None:
+            return
         self._store.shutdown()
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         """Ensure the store worker thread is stopped when the widget closes."""
         try:
             self.shutdown()

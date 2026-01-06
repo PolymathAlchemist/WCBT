@@ -51,7 +51,7 @@ class MockApp(QWidget):
 
         tabs = QTabWidget()
 
-        self.run_tab = RunTab(jobs)
+        self.run_tab = RunTab()
         tabs.addTab(self.run_tab, "Run")
 
         self.restore_tab = RestoreTab(jobs, runs)

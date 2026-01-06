@@ -63,12 +63,64 @@ class ProfileStore(Protocol):
 
     def list_jobs(self) -> Sequence[JobSummary]:
         """
-        Return known jobs in a stable display order.
+        Return known active jobs in a stable display order.
 
         Returns
         -------
         Sequence[JobSummary]
-            Known jobs ordered for display (implementation-defined but stable).
+            Active jobs ordered for display (implementation-defined but stable).
+        """
+        raise NotImplementedError
+
+    def create_job(self, name: str) -> JobId:
+        """
+        Create a new job.
+
+        Parameters
+        ----------
+        name:
+            Human-friendly display name.
+
+        Returns
+        -------
+        JobId
+            Newly created job identifier.
+        """
+        raise NotImplementedError
+
+    def rename_job(self, job_id: JobId, new_name: str) -> None:
+        """
+        Rename an existing job.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job to rename.
+        new_name:
+            New display name.
+
+        Raises
+        ------
+        UnknownJobError
+            If job_id does not exist.
+        """
+        raise NotImplementedError
+
+    def delete_job(self, job_id: JobId) -> None:
+        """
+        Delete a job.
+
+        Implementations may perform a soft delete.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job to delete.
+
+        Raises
+        ------
+        UnknownJobError
+            If job_id does not exist.
         """
         raise NotImplementedError
 

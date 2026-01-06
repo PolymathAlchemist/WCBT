@@ -24,9 +24,11 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -35,7 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from backup_engine.backup.service import BackupRunResult, run_backup
-from gui.mock_data import MockJob
+from gui.adapters.profile_store_adapter import ProfileStoreAdapter
 
 
 def _mono() -> QFont:
@@ -54,21 +56,25 @@ class BackupWorker(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._job: MockJob | None = None
+        self._job_id: str | None = None
+        self._source: Path | None = None
 
-    def configure(self, job: MockJob) -> None:
-        self._job = job
+    def configure(self, job_id: str, source: Path) -> None:
+        self._job_id = job_id
+        self._source = source
 
     @Slot()
     def run(self) -> None:
-        if self._job is None:
+        if self._job_id is None:
             self.failed.emit("No job selected.")
             return
+        if self._source is None:
+            self.failed.emit("No source folder selected.")
+            return
         try:
-            # Safe default: plan-only but write plan artifact so UI can open it.
             result = run_backup(
                 profile_name="default",
-                source=Path(self._job.root_path),
+                source=self._source,
                 dry_run=True,
                 data_root=None,
                 write_plan=True,
@@ -79,19 +85,41 @@ class BackupWorker(QObject):
 
 
 class RunTab(QWidget):
-    def __init__(self, jobs: list[MockJob]) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._jobs = jobs
+        self._active_job_id: str | None = None
+        self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
+        self._store.jobs_loaded.connect(self._on_jobs_loaded)
+        self._store.error.connect(self._on_store_error)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
 
         job_box = QGroupBox("Job")
         job_layout = QHBoxLayout(job_box)
+        job_grid = QVBoxLayout()
+        job_layout.addLayout(job_grid, 1)
 
         self.job_combo = QComboBox()
-        for job in jobs:
-            self.job_combo.addItem(job.name, job.job_id)
+        self.job_combo.setEnabled(False)
+        self.job_combo.currentIndexChanged.connect(self._on_job_changed)
+
+        job_row = QHBoxLayout()
+        job_row.addWidget(QLabel("Selected job:"))
+        job_row.addWidget(self.job_combo, 1)
+        job_grid.addLayout(job_row)
+
+        self.source_edit = QLineEdit()
+        self.source_edit.setPlaceholderText("Choose source folder to back up…")
+
+        self.btn_browse_source = QPushButton("Browse…")
+        self.btn_browse_source.clicked.connect(self._browse_source)
+
+        src_row = QHBoxLayout()
+        src_row.addWidget(QLabel("Source folder:"))
+        src_row.addWidget(self.source_edit, 1)
+        src_row.addWidget(self.btn_browse_source)
+        job_grid.addLayout(src_row)
 
         self.btn_backup_now = QPushButton("Backup Now")
         self.btn_backup_now.clicked.connect(self._backup_now)
@@ -138,18 +166,44 @@ class RunTab(QWidget):
 
         layout.addWidget(status_box, 1)
 
-    def _selected_job(self) -> MockJob:
-        job_id = str(self.job_combo.currentData())
-        return next(j for j in self._jobs if j.job_id == job_id)
+        try:
+            self._store.request_list_jobs.emit()
+        except Exception:
+            self._store.shutdown()
+            raise
+
+    def _browse_source(self) -> None:
+        start_dir = self.source_edit.text().strip() or str(Path.home())
+        directory = QFileDialog.getExistingDirectory(self, "Select source folder", start_dir)
+        if directory:
+            self.source_edit.setText(directory)
+
+    def _selected_job_id(self) -> str | None:
+        if self.job_combo.currentIndex() < 0:
+            return None
+        return str(self.job_combo.currentData())
 
     def _backup_now(self) -> None:
-        job = self._selected_job()
+        job_id = self._selected_job_id()
+        if job_id is None:
+            QMessageBox.information(self, "Backup", "Select a job first.")
+            return
+
+        source_text = self.source_edit.text().strip()
+        if not source_text:
+            QMessageBox.information(self, "Backup", "Choose a source folder first.")
+            return
+
+        source = Path(source_text)
+        if not source.exists() or not source.is_dir():
+            QMessageBox.critical(self, "Backup", "Source folder does not exist.")
+            return
+
         self.btn_backup_now.setEnabled(False)
-        self.status_label.setText(f"Planning: {job.name} …")
+        self.status_label.setText(f"Planning: {self.job_combo.currentText()} …")
         self.summary.setPlainText("Running backup plan…")
-        self._worker.configure(job)
-        QThread.msleep(0)  # no-op, keeps intent explicit
-        # queued invocation by posting to worker thread:
+
+        self._worker.configure(job_id, source)
         QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
 
     def _open_artifacts(self) -> None:
@@ -159,11 +213,6 @@ class RunTab(QWidget):
 
         root = self._last_result.archive_root
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
-
-    def closeEvent(self, event) -> None:
-        self._thread.quit()
-        self._thread.wait(2000)
-        super().closeEvent(event)
 
     def _on_backup_finished(self, result_obj: object) -> None:
         result: BackupRunResult = result_obj  # engine type
@@ -178,3 +227,45 @@ class RunTab(QWidget):
         self.btn_backup_now.setEnabled(True)
         self.status_label.setText("Error")
         QMessageBox.critical(self, "Backup failed", message)
+
+    def _on_jobs_loaded(self, jobs_obj: object) -> None:
+        try:
+            jobs = list(jobs_obj)
+        except Exception:
+            QMessageBox.critical(self, "Profile Store Error", "Invalid job list from store.")
+            return
+
+        self.job_combo.blockSignals(True)
+        try:
+            self.job_combo.clear()
+            for js in jobs:
+                job_id = str(getattr(js, "job_id"))
+                name = str(getattr(js, "name"))
+                self.job_combo.addItem(name, job_id)
+        finally:
+            self.job_combo.blockSignals(False)
+
+        if self.job_combo.count() == 0:
+            self.job_combo.setEnabled(False)
+            self.status_label.setText("No jobs yet. Create one in Authoring.")
+            self.btn_backup_now.setEnabled(False)
+            return
+
+        self.job_combo.setEnabled(True)
+        self.btn_backup_now.setEnabled(True)
+        self._on_job_changed()
+
+    def _on_store_error(self, job_id: str, message: str) -> None:
+        self.status_label.setText("Error")
+        QMessageBox.critical(self, "Profile Store Error", message)
+
+    def _on_job_changed(self) -> None:
+        self._active_job_id = self._selected_job_id()
+
+    def closeEvent(self, event) -> None:
+        try:
+            self._thread.quit()
+            self._thread.wait(2000)
+        finally:
+            self._store.shutdown()
+            super().closeEvent(event)

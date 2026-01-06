@@ -42,6 +42,9 @@ class ProfileStoreWorker(QObject):
     error = Signal(str, str)  # job_id, message
 
     jobs_loaded = Signal(object)  # list[JobSummary]
+    job_created = Signal(str)  # job_id
+    job_renamed = Signal(str)  # job_id
+    job_deleted = Signal(str)  # job_id
 
     def __init__(self, profile_name: str, data_root: Path | None) -> None:
         super().__init__()
@@ -56,6 +59,42 @@ class ProfileStoreWorker(QObject):
             self.error.emit("", str(e))
             return
         self.jobs_loaded.emit(jobs)
+
+    @Slot(str)
+    def create_job(self, name: str) -> None:
+        """Create a job and emit the new job_id."""
+        try:
+            job_id = self._store.create_job(name)
+        except Exception as e:
+            self.error.emit("", str(e))
+            return
+        self.job_created.emit(job_id)
+
+    @Slot(str, str)
+    def rename_job(self, job_id: str, new_name: str) -> None:
+        """Rename job_id and emit completion."""
+        try:
+            self._store.rename_job(job_id, new_name)
+        except UnknownJobError:
+            self.unknown_job.emit(job_id)
+            return
+        except Exception as e:
+            self.error.emit(job_id, str(e))
+            return
+        self.job_renamed.emit(job_id)
+
+    @Slot(str)
+    def delete_job(self, job_id: str) -> None:
+        """Delete job_id and emit completion."""
+        try:
+            self._store.delete_job(job_id)
+        except UnknownJobError:
+            self.unknown_job.emit(job_id)
+            return
+        except Exception as e:
+            self.error.emit(job_id, str(e))
+            return
+        self.job_deleted.emit(job_id)
 
     @Slot(str)
     def load_rules(self, job_id: str) -> None:
@@ -96,6 +135,9 @@ class ProfileStoreAdapter(QObject):
     request_load_rules = Signal(str)
     request_save_rules = Signal(str, str, object)
     request_list_jobs = Signal()
+    request_create_job = Signal(str)
+    request_rename_job = Signal(str, str)
+    request_delete_job = Signal(str)
 
     # Results (worker emits; adapter forwards)
     rules_loaded = Signal(str, object)  # job_id, GuiRuleSet
@@ -103,6 +145,9 @@ class ProfileStoreAdapter(QObject):
     unknown_job = Signal(str)  # job_id
     error = Signal(str, str)  # job_id, message
     jobs_loaded = Signal(object)  # list[JobSummary]
+    job_created = Signal(str)  # job_id
+    job_renamed = Signal(str)  # job_id
+    job_deleted = Signal(str)  # job_id
 
     def __init__(self, profile_name: str, data_root: Path | None = None) -> None:
         super().__init__()
@@ -121,6 +166,15 @@ class ProfileStoreAdapter(QObject):
         self.request_list_jobs.connect(
             self._worker.list_jobs, type=Qt.ConnectionType.QueuedConnection
         )
+        self.request_create_job.connect(
+            self._worker.create_job, type=Qt.ConnectionType.QueuedConnection
+        )
+        self.request_rename_job.connect(
+            self._worker.rename_job, type=Qt.ConnectionType.QueuedConnection
+        )
+        self.request_delete_job.connect(
+            self._worker.delete_job, type=Qt.ConnectionType.QueuedConnection
+        )
 
         # Forward results to GUI.
         self._worker.rules_loaded.connect(self.rules_loaded)
@@ -128,6 +182,9 @@ class ProfileStoreAdapter(QObject):
         self._worker.unknown_job.connect(self.unknown_job)
         self._worker.error.connect(self.error)
         self._worker.jobs_loaded.connect(self.jobs_loaded)
+        self._worker.job_created.connect(self.job_created)
+        self._worker.job_renamed.connect(self.job_renamed)
+        self._worker.job_deleted.connect(self.job_deleted)
 
         self._thread.start()
 
