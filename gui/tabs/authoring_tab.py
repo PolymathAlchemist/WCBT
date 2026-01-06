@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.adapters.profile_store_adapter import GuiRuleSet, ProfileStoreAdapter
-from gui.dialogs.mock_rule_editor_dialog import RuleEditorDialog
+from gui.dialogs.rule_editor_dialog import RuleEditorDialog
 
 
 def _mono() -> QFont:

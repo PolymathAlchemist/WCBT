@@ -1,8 +1,7 @@
 """
-WCBT GUI mock app.
+WCBT GUI app.
 
-Runs a multi-tab UI with per-tab modules so we can iterate quickly on layout.
-No core wiring.
+Tabbed GUI backed by engine components (ProfileStore, backup/restore services).
 """
 
 from __future__ import annotations
@@ -11,20 +10,16 @@ import sys
 
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QTabWidget, QVBoxLayout, QWidget
 
-from gui.mock_data import seed_jobs, seed_runs
 from gui.tabs.authoring_tab import AuthoringTab
 from gui.tabs.restore_tab import RestoreTab
 from gui.tabs.run_tab import RunTab
 
 
-class MockApp(QWidget):
+class AppWindow(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("WCBT GUI Mock (Tabbed, No Engine Wiring)")
         self.resize(1180, 720)
-
-        jobs = seed_jobs()
-        runs = seed_runs()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -54,7 +49,7 @@ class MockApp(QWidget):
         self.run_tab = RunTab()
         tabs.addTab(self.run_tab, "Run")
 
-        self.restore_tab = RestoreTab(jobs, runs)
+        self.restore_tab = RestoreTab()
         tabs.addTab(self.restore_tab, "Restore")
 
         self.authoring_tab = AuthoringTab()
@@ -66,20 +61,20 @@ class MockApp(QWidget):
         """Shutdown background workers before closing the application."""
         try:
             if hasattr(self, "run_tab"):
-                self.run_tab.close()
+                self.run_tab.shutdown()
 
             if hasattr(self, "restore_tab"):
-                self.restore_tab.close()
+                self.restore_tab.shutdown()
 
             if hasattr(self, "authoring_tab"):
-                self.authoring_tab.shutdown()  # type: ignore[attr-defined]
+                self.authoring_tab.shutdown()
         finally:
             super().closeEvent(event)
 
 
 def main() -> int:
     app = QApplication(sys.argv)
-    w = MockApp()
+    w = AppWindow()
     w.show()
     return app.exec()
 

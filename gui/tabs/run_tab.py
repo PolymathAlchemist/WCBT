@@ -127,8 +127,6 @@ class RunTab(QWidget):
         self.btn_open_artifacts = QPushButton("Open Artifacts Folder")
         self.btn_open_artifacts.clicked.connect(self._open_artifacts)
 
-        job_layout.addWidget(QLabel("Selected job:"))
-        job_layout.addWidget(self.job_combo, 1)
         job_layout.addWidget(self.btn_backup_now)
         job_layout.addWidget(self.btn_open_artifacts)
 
@@ -261,6 +259,12 @@ class RunTab(QWidget):
 
     def _on_job_changed(self) -> None:
         self._active_job_id = self._selected_job_id()
+
+    def shutdown(self) -> None:
+        """Shut down background worker threads cleanly."""
+        self._thread.quit()
+        self._thread.wait(2000)
+        self._store.shutdown()
 
     def closeEvent(self, event) -> None:
         try:

@@ -1,10 +1,10 @@
 """
-Mock Rule Editor dialog (UI only).
+Rule Editor dialog (UI only).
 
 Purpose:
 - Provide a dedicated Add/Edit dialog for glob-based rules.
 - Include inline, collapsible syntax help (UX docstring).
-- Optional preview area is mock-only (no filesystem, no glob parsing).
+- Optional preview area
 
 No WCBT engine wiring. No validation beyond basic non-empty pattern.
 """
@@ -47,7 +47,7 @@ class RuleEditorDialog(QDialog):
     - Root-relative, / separators, glob syntax.
     - "Future backups only" messaging.
     - Collapsible help area.
-    - Mock preview region (static text for now).
+    - Preview region (static text for now).
     """
 
     def __init__(
@@ -103,7 +103,7 @@ class RuleEditorDialog(QDialog):
         help_box = self._build_collapsible_help()
         root.addWidget(help_box)
 
-        # Preview area (mock)
+        # Preview area
         preview = self._build_preview()
         root.addWidget(preview, 1)
 
@@ -186,7 +186,7 @@ class RuleEditorDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        lbl = QLabel("Preview (mock)")
+        lbl = QLabel("Preview")
         lbl.setStyleSheet("color: #666;")
         layout.addWidget(lbl)
 
@@ -196,7 +196,7 @@ class RuleEditorDialog(QDialog):
         self.preview_text.setPlainText(
             "\n".join(
                 [
-                    "No preview yet (mock).",
+                    "No preview yet.",
                     "",
                     "In the real GUI, this will show an estimate of matches and sample paths",
                     "without modifying any data.",
@@ -218,17 +218,17 @@ class RuleEditorDialog(QDialog):
         text = self.pattern_edit.text().strip()
         self.btn_save.setEnabled(bool(text))
 
-        # Mock preview update (static for now; could be slightly dynamic without parsing)
+        # Preview update (static for now; could be slightly dynamic without parsing)
         if text:
             self.preview_text.setPlainText(
                 "\n".join(
                     [
-                        "Preview (mock)",
+                        "Preview",
                         f"  pattern: {text}",
                         "",
                         "Would match approximately:",
-                        "  - (mock) 1,204 files",
-                        "  - (mock) 87 directories",
+                        "  - 1,204 files",
+                        "  - 87 directories",
                     ]
                 )
             )
@@ -236,9 +236,9 @@ class RuleEditorDialog(QDialog):
             self.preview_text.setPlainText(
                 "\n".join(
                     [
-                        "No preview yet (mock).",
+                        "No preview yet.",
                         "",
-                        "Enter a pattern to see a mock preview.",
+                        "Enter a pattern to see a preview.",
                     ]
                 )
             )

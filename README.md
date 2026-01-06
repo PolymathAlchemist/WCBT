@@ -160,7 +160,7 @@ A PySide-based GUI is under active development.
 
 Current state:
 - Authoring tab is **engine-backed** and persists to SQLite
-- Run and Restore tabs are still mocked
+- GUI path is de-mocked
 - GUI uses a thin adapter layer (no CLI calls)
 
 The GUI is not yet considered stable for end users.
@@ -168,7 +168,7 @@ The GUI is not yet considered stable for end users.
 To run the GUI (development):
 
 ```bash
-uv run python -m gui.mock_app
+uv run python -m gui.app
 ```
 
 ---

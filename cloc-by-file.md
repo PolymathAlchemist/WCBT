@@ -13,18 +13,17 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | File                                                             |    blank |  comment |     code |
 |:-----------------------------------------------------------------|---------:|---------:|---------:|
 | .\gui\tabs\authoring_tab.py                                      |      129 |       56 |      486 |
-| .\gui\mock_wcbt_gui.py                                           |      114 |       31 |      442 |
+| .\gui\tabs\restore_tab.py                                        |      104 |        7 |      403 |
 | .\backup_engine\verify.py                                        |       98 |      165 |      372 |
 | .\backup_engine\restore\service.py                               |       73 |      134 |      325 |
-| .\gui\tabs\restore_tab.py                                        |       65 |        5 |      283 |
 | .\backup_engine\restore\verify.py                                |       68 |      116 |      252 |
 | .\backup_engine\backup\service.py                                |       56 |      112 |      251 |
 | .\backup_engine\data_models.py                                   |       88 |      119 |      232 |
 | .\wcbt\cli.py                                                    |       43 |       37 |      224 |
-| .\gui\tabs\run_tab.py                                            |       54 |        4 |      213 |
+| .\gui\tabs\run_tab.py                                            |       55 |        5 |      215 |
 | .\backup_engine\restore\stage.py                                 |       61 |      100 |      187 |
 | .\backup_engine\profile_lock.py                                  |       66 |      114 |      185 |
-| .\gui\dialogs\mock_rule_editor_dialog.py                         |       46 |       28 |      177 |
+| .\gui\dialogs\rule_editor_dialog.py                              |       46 |       28 |      177 |
 | .\backup_engine\manifest_store.py                                |       67 |      173 |      160 |
 | .\backup_engine\backup\execute.py                                |       54 |      143 |      155 |
 | .\backup_engine\profile_store\sqlite_store.py                    |       50 |       93 |      141 |
@@ -47,7 +46,6 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\tests\test_end_to_end_backup_restore.py                        |       24 |       10 |       81 |
 | .\tests\test_restore_verify_stage.py                             |       22 |        1 |       81 |
 | .\UpdateAndRun.bat                                               |       11 |        8 |       69 |
-| .\gui\mock_data.py                                               |       14 |        5 |       69 |
 | .\backup_engine\restore\data_models.py                           |       29 |       95 |       65 |
 | .\backup_engine\restore\materialize.py                           |       28 |       57 |       65 |
 | .\backup_engine\backup\materialize.py                            |       21 |       32 |       62 |
@@ -56,10 +54,10 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\tests\test_verify_run_writes_jsonl_on_failure_hash_mismatch.py |       20 |        2 |       60 |
 | .\restore_cli.patch                                              |        6 |       34 |       59 |
 | .\tests\test_verify_run_writes_jsonl_on_failure_unreadable.py    |       20 |        2 |       57 |
-| .\gui\app.py                                                     |       26 |        6 |       56 |
 | .\tests\test_audit_docstrings_tool.py                            |       20 |        0 |       55 |
 | .\tests\test_cli_parser_restore.py                               |       13 |        1 |       55 |
 | .\tests\test_restore_promotes_stage.py                           |       15 |        2 |       54 |
+| .\gui\app.py                                                     |       25 |        5 |       53 |
 | .\tests\test_verify_run_writes_jsonl_on_failure.py               |       18 |        2 |       53 |
 | .\tests\test_paths_and_safety.py                                 |       20 |        0 |       52 |
 | .\tests\test_manifest_roundtrip.py                               |        8 |        0 |       50 |
@@ -109,4 +107,4 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\gui\adapters\__init__.py                                       |        2 |        9 |        0 |
 | .\gui\tabs\__init__.py                                           |        0 |        1 |        0 |
 | --------                                                         | -------- | -------- | -------- |
-| SUM:                                                             |     2609 |     3145 |     7874 |
+| SUM:                                                             |     2520 |     3111 |     7482 |
