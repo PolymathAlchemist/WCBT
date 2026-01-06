@@ -17,9 +17,9 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\backup_engine\verify.py                                        |       98 |      165 |      372 |
 | .\backup_engine\restore\service.py                               |       69 |      131 |      292 |
 | .\backup_engine\restore\verify.py                                |       68 |      116 |      252 |
+| .\backup_engine\backup\service.py                                |       56 |      112 |      251 |
 | .\backup_engine\data_models.py                                   |       88 |      119 |      232 |
 | .\wcbt\cli.py                                                    |       43 |       37 |      224 |
-| .\backup_engine\backup\service.py                                |       51 |      109 |      207 |
 | .\backup_engine\restore\stage.py                                 |       61 |      100 |      187 |
 | .\backup_engine\profile_lock.py                                  |       66 |      114 |      185 |
 | .\gui\dialogs\mock_rule_editor_dialog.py                         |       46 |       28 |      177 |
@@ -27,6 +27,7 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\backup_engine\manifest_store.py                                |       67 |      173 |      160 |
 | .\backup_engine\backup\execute.py                                |       54 |      143 |      155 |
 | .\README.md                                                      |       68 |        0 |      140 |
+| .\gui\tabs\mock_run_tab.py                                       |       38 |        6 |      136 |
 | .\tests\audit_docstrings.py                                      |       57 |       87 |      128 |
 | .\tools\audit_docstrings.py                                      |       57 |       86 |      127 |
 | .\tests\test_profile_lock.py                                     |       31 |        0 |      126 |
@@ -39,7 +40,6 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\backup_engine\backup\plan.py                                   |       60 |      143 |      100 |
 | .\tests\test_cli_exit_codes.py                                   |       28 |        1 |       96 |
 | .\backup_engine\backup\scan.py                                   |       38 |       70 |       95 |
-| .\gui\tabs\mock_run_tab.py                                       |       26 |        4 |       95 |
 | .\gui\adapters\profile_store_adapter.py                          |       30 |       22 |       85 |
 | .\backup_engine\profile_store\sqlite_store.py                    |       34 |       69 |       84 |
 | .\tests\test_copy_execution.py                                   |       27 |        0 |       84 |
@@ -109,4 +109,4 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\gui\adapters\__init__.py                                       |        2 |        9 |        0 |
 | .\gui\tabs\__init__.py                                           |        0 |        1 |        0 |
 | --------                                                         | -------- | -------- | -------- |
-| SUM:                                                             |     2505 |     3068 |     7377 |
+| SUM:                                                             |     2522 |     3073 |     7462 |

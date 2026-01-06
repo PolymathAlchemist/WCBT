@@ -52,7 +52,7 @@ class MockApp(QWidget):
         tabs = QTabWidget()
         tabs.addTab(RunTab(jobs), "Run")
         tabs.addTab(RestoreTab(jobs, runs), "Restore")
-        self.authoring_tab = AuthoringTab(jobs)
+        self.authoring_tab = AuthoringTab()
         tabs.addTab(self.authoring_tab, "Authoring")
 
         root.addWidget(tabs, 1)
