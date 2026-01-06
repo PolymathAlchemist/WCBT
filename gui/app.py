@@ -13,8 +13,8 @@ from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QTabWidget, QVB
 
 from gui.mock_data import seed_jobs, seed_runs
 from gui.tabs.authoring_tab import AuthoringTab
-from gui.tabs.mock_restore_tab import RestoreTab
-from gui.tabs.mock_run_tab import RunTab
+from gui.tabs.restore_tab import RestoreTab
+from gui.tabs.run_tab import RunTab
 
 
 class MockApp(QWidget):
@@ -50,8 +50,13 @@ class MockApp(QWidget):
         root.addWidget(header)
 
         tabs = QTabWidget()
-        tabs.addTab(RunTab(jobs), "Run")
-        tabs.addTab(RestoreTab(jobs, runs), "Restore")
+
+        self.run_tab = RunTab(jobs)
+        tabs.addTab(self.run_tab, "Run")
+
+        self.restore_tab = RestoreTab(jobs, runs)
+        tabs.addTab(self.restore_tab, "Restore")
+
         self.authoring_tab = AuthoringTab()
         tabs.addTab(self.authoring_tab, "Authoring")
 
@@ -60,7 +65,12 @@ class MockApp(QWidget):
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """Shutdown background workers before closing the application."""
         try:
-            # If we stored the authoring tab instance, shut it down.
+            if hasattr(self, "run_tab"):
+                self.run_tab.close()
+
+            if hasattr(self, "restore_tab"):
+                self.restore_tab.close()
+
             if hasattr(self, "authoring_tab"):
                 self.authoring_tab.shutdown()  # type: ignore[attr-defined]
         finally:

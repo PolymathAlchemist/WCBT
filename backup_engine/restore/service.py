@@ -151,6 +151,23 @@ def _write_restore_summary(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RestoreRunResult:
+    """
+    Summary of a restore run suitable for UI consumption.
+    """
+
+    run_id: str
+    manifest_path: Path
+    destination_root: Path
+    dry_run: bool
+    mode: str
+    verify: str
+    artifacts_root: Path
+    stage_root: Path
+    summary_path: Path
+
+
 @dataclass(frozen=True)
 class SystemClock(Clock):
     """
@@ -173,7 +190,7 @@ def run_restore(
     dry_run: bool,
     data_root: Path | None = None,
     clock: Clock | None = None,
-) -> None:
+) -> RestoreRunResult:
     """
     Plan, stage, optionally verify, and optionally promote a restore.
 
@@ -437,7 +454,17 @@ def run_restore(
                     "verified_files": int(verification_result.verified_files),
                 },
             )
-            return
+            return RestoreRunResult(
+                run_id=run_id,
+                manifest_path=manifest_path,
+                destination_root=destination_root,
+                dry_run=True,
+                mode=mode,
+                verify=verify,
+                artifacts_root=artifacts_root,
+                stage_root=stage_root,
+                summary_path=artifacts_root / "restore_summary.json",
+            )
 
         _write_restore_summary(
             artifacts_root=artifacts_root,
@@ -471,6 +498,19 @@ def run_restore(
             run_id=str(plan.run_id),
             dry_run=False,
             journal=None,
+        )
+
+        final_artifacts_root = _restore_artifacts_root(destination_root, run_id)
+        return RestoreRunResult(
+            run_id=run_id,
+            manifest_path=manifest_path,
+            destination_root=destination_root,
+            dry_run=False,
+            mode=mode,
+            verify=verify,
+            artifacts_root=final_artifacts_root,
+            stage_root=stage_root,
+            summary_path=final_artifacts_root / "restore_summary.json",
         )
 
     except Exception:  # noqa: BLE001
