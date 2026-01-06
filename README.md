@@ -57,7 +57,7 @@ wcbt/
 │   ├── restore/
 │   ├── verify/
 │   └── data_models.py
-├── gui/                  # GUI (PySide) — currently mid-integration
+├── gui/                  # GUI (PySide) — engine-backed, under active development
 │   ├── tabs/
 │   ├── dialogs/
 │   └── adapters/
@@ -159,16 +159,20 @@ Exit codes **never suppress artifact generation**.
 A PySide-based GUI is under active development.
 
 Current state:
-- Authoring tab is **engine-backed** and persists to SQLite
-- Run and Restore tabs are still mocked
-- GUI uses a thin adapter layer (no CLI calls)
+- Authoring, Run, and Restore tabs are **engine-backed**
+- Job lifecycle and rule authoring persist via SQLite (`ProfileStore`)
+- Backup and restore execution use engine services directly (no CLI calls)
+- Restore history is discovered from real on-disk artifacts
+- GUI execution path is fully de-mocked
+- The GUI is intended as a structured front-end to the same artifact-driven engine,
+not a separate execution layer.
 
 The GUI is not yet considered stable for end users.
 
 To run the GUI (development):
 
 ```bash
-uv run python -m gui.mock_app
+uv run python -m gui.app
 ```
 
 ---
