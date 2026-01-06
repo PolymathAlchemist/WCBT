@@ -208,5 +208,12 @@ clearly, and permanently**.
 
 ## License
 
-License: To be determined
+WCBT is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
+This license allows use, study, and modification of the code, while requiring
+that derivative works and network-deployed uses remain open and attributable.
+
+The intent of this license is to prevent proprietary appropriation or
+unattributed reuse of the project.
+
+For alternative licensing or commercial arrangements, contact the author.
