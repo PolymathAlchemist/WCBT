@@ -67,6 +67,23 @@ class BackupRunContext:
     archive_root: Path
 
 
+@dataclass(frozen=True, slots=True)
+class BackupRunResult:
+    """
+    Summary of a backup planning/materialization run suitable for UI consumption.
+    """
+
+    run_id: str
+    profile_name: str
+    source_root: Path
+    archive_root: Path
+    dry_run: bool
+    report_text: str
+    plan_text_path: Path | None
+    manifest_path: Path | None
+    executed: bool
+
+
 def run_backup(
     *,
     profile_name: str,
@@ -84,7 +101,7 @@ def run_backup(
     execute: bool = False,
     force: bool = False,
     break_lock: bool = False,
-) -> None:
+) -> BackupRunResult:
     """
     Plan (and optionally materialize and execute) a backup for a given profile.
 
@@ -175,6 +192,7 @@ def run_backup(
     print(report_text)
 
     if dry_run:
+        plan_text_path: Path | None = None
         if write_plan or plan_path is not None:
             output_path = plan_path or (archive_root / "plan.txt")
             _write_plan_artifact(
@@ -182,9 +200,21 @@ def run_backup(
                 content=report_text,
                 overwrite=overwrite_plan,
             )
+            plan_text_path = output_path
             print()
             print(f"Plan written: {output_path}")
-        return
+
+        return BackupRunResult(
+            run_id=archive_id,
+            profile_name=profile_name,
+            source_root=source_root,
+            archive_root=archive_root,
+            dry_run=True,
+            report_text=report_text,
+            plan_text_path=plan_text_path,
+            manifest_path=None,
+            executed=False,
+        )
 
     lock_path = build_profile_lock_path(work_root=paths.work_root)
     with acquire_profile_lock(
@@ -212,7 +242,17 @@ def run_backup(
         print(f"  Manifest file : {materialized.manifest_path}")
 
         if not execute:
-            return
+            return BackupRunResult(
+                run_id=archive_id,
+                profile_name=profile_name,
+                source_root=source_root,
+                archive_root=archive_root,
+                dry_run=False,
+                report_text=report_text,
+                plan_text_path=materialized.plan_text_path,
+                manifest_path=materialized.manifest_path,
+                executed=False,
+            )
 
         summary = execute_copy_plan(
             plan=plan_with_issues,
@@ -237,6 +277,18 @@ def run_backup(
             raise BackupExecutionError(
                 "Copy execution failed. See manifest.json for per-operation results."
             )
+
+    return BackupRunResult(
+        run_id=archive_id,
+        profile_name=profile_name,
+        source_root=source_root,
+        archive_root=archive_root,
+        dry_run=False,
+        report_text=report_text,
+        plan_text_path=materialized.plan_text_path,
+        manifest_path=materialized.manifest_path,
+        executed=True,
+    )
 
 
 def _build_executed_run_manifest(
