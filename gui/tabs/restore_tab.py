@@ -1,8 +1,8 @@
 """
-Restore tab mock.
+Restore tab (engine-backed).
 
-Lists mock run history and shows manifest-like details.
-No WCBT engine integration.
+- Lists discovered backup runs by scanning an archive root for run manifests.
+- Allows the user to select a manifest.json and execute restore via engine restore service.
 """
 
 from __future__ import annotations
@@ -43,22 +43,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from backup_engine.manifest_store import list_backup_runs
 from backup_engine.restore.service import RestoreRunResult, run_restore
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
+
+
+def _format_mtime(ts: float) -> str:
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _mono() -> QFont:
     f = QFont("Consolas")
     f.setStyleHint(QFont.Monospace)
     return f
-
-
-def _format_dt(dt) -> str:
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _format_mtime(ts: float) -> str:
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _safe_read_manifest_summary(manifest_path: Path) -> dict[str, object]:
@@ -257,6 +254,8 @@ class RestoreTab(QWidget):
         self._worker.failed.connect(self._on_restore_failed)
         self._thread.start()
 
+        self._store.request_list_jobs.emit()
+
     def _selected_job_id(self) -> str:
         return str(self.job_combo.currentData())
 
@@ -308,70 +307,23 @@ class RestoreTab(QWidget):
             self.details.setPlainText("Archive root does not exist.")
             return
 
-        manifests: list[Path] = []
-        # Scan for manifests; this is real history discovery without mock data.
-        try:
-            for p in root.rglob("manifest.json"):
-                manifests.append(p)
-                if len(manifests) >= 500:
-                    break
-        except Exception as exc:
-            self.details.setPlainText(f"Failed to scan archive root: {exc}")
-            return
+        selected_profile_name = str(self.job_combo.currentText()).strip() or None
+        selected_profile_name = str(self.job_combo.currentText()).strip() or None
+        runs = list_backup_runs(root, profile_name=selected_profile_name, limit=500)
 
-        manifests.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-
-        for mp in manifests:
-            try:
-                mtime = mp.stat().st_mtime
-            except Exception:
-                mtime = 0.0
-
-            text = f"{_format_mtime(mtime)}  {mp.parent.name}  {mp}"
+        for r in runs:
+            text = f"{r.modified_at_utc}  {r.run_id}  {r.manifest_path}"
             if needle and needle not in text.lower():
                 continue
 
             item = QListWidgetItem(text)
-            item.setData(Qt.UserRole, str(mp))
+            item.setData(Qt.UserRole, str(r.manifest_path))
             self.history.addItem(item)
 
         if self.history.count() > 0:
             self.history.setCurrentRow(0)
         else:
             self.details.setPlainText("No manifests found (with current filter).")
-
-    def _restore_selected(self) -> None:
-        cur = self.history.currentItem()
-        if cur is None:
-            QMessageBox.warning(self, "Restore", "Select a run to restore.")
-            return
-
-        dest_text = self.dest.text().strip()
-        if not dest_text:
-            QMessageBox.warning(self, "Restore", "Choose a destination folder.")
-            return
-
-        run_id = str(cur.data(Qt.UserRole))
-        run = next(r for r in self._runs if r.run_id == run_id)
-
-        manifest_path = Path(str(run.artifact_root)) / "manifest.json"
-
-        mode = "add-only"
-        verify = "size" if self.verify_after.isChecked() else "none"
-        dry_run = self.dry_run.isChecked()
-
-        self._last_result = None
-        self.details.setPlainText("Running restore…")
-        self.setEnabled(False)
-
-        self._worker.configure(
-            manifest_path=manifest_path,
-            destination_root=Path(dest_text),
-            mode=mode,
-            verify=verify,
-            dry_run=dry_run,
-        )
-        QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
 
     def _on_restore_finished(self, result_obj: object) -> None:
         result: RestoreRunResult = result_obj
@@ -447,6 +399,7 @@ class RestoreTab(QWidget):
         lines.append(f"  path: {manifest_path}")
         lines.append(f"  folder: {manifest_path.parent}")
         lines.append(f"  modified: {_format_mtime(mtime)}")
+
         lines.append(f"  size_bytes: {size}")
         if summary:
             lines.append("")
@@ -478,26 +431,6 @@ class RestoreTab(QWidget):
         d = QFileDialog.getExistingDirectory(self, "Select archive root")
         if d:
             self.archive_root.setText(d)
-
-    def _mock_restore(self) -> None:
-        cur = self.history.currentItem()
-        if cur is None:
-            QMessageBox.warning(self, "Restore", "Select a run to restore.")
-            return
-
-        dest = self.dest.text().strip()
-        if not dest:
-            QMessageBox.warning(self, "Restore", "Choose a destination folder.")
-            return
-
-        QMessageBox.information(
-            self,
-            "Mock restore",
-            "This is a mock restore.\n\n"
-            f"Destination: {dest}\n"
-            f"Dry run: {self.dry_run.isChecked()}\n"
-            f"Verify after: {self.verify_after.isChecked()}",
-        )
 
     def _on_restore_failed(self, message: str) -> None:
         self.setEnabled(True)

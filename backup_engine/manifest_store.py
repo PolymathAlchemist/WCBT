@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar, Iterator, Mapping, Protocol
 
@@ -398,3 +399,109 @@ def load_all_manifests(manifest_root: Path) -> list[BackupManifest]:
     for path in iter_manifest_paths(manifest_root):
         manifests.append(read_manifest(path))
     return manifests
+
+
+@dataclass(frozen=True, slots=True)
+class BackupRunSummary:
+    """
+    Minimal, stable summary of a backup run discovered via manifest scanning.
+
+    This is intentionally lightweight and tolerant of partial/corrupt manifests.
+    It is suitable for UI listing, not for restore planning.
+    """
+
+    run_id: str
+    manifest_path: Path
+    modified_at_utc: str
+    created_at_utc: str | None
+    archive_root: str | None
+    profile_name: str | None
+    source_root: str | None
+
+
+def list_backup_runs(
+    archive_root: Path,
+    *,
+    profile_name: str | None = None,
+    limit: int = 500,
+) -> list[BackupRunSummary]:
+    """
+    Discover backup runs by scanning an archive root for run manifests.
+
+    Parameters
+    ----------
+    archive_root:
+        Root directory to scan for `manifest.json` files.
+    limit:
+        Maximum number of discovered runs to return (after sorting by mtime desc).
+
+    Returns
+    -------
+    list[BackupRunSummary]
+        Discovered runs sorted by manifest mtime descending.
+
+    Notes
+    -----
+    - This function is intentionally tolerant: unreadable or invalid JSON files
+      are skipped.
+    - Only schema_version 'wcbt_run_manifest_v2' is returned.
+    - Sorting uses filesystem mtime to reflect "most recently written" runs.
+    """
+    root = archive_root.expanduser()
+    if not root.exists() or not root.is_dir():
+        return []
+
+    candidates: list[tuple[float, Path]] = []
+    try:
+        for mp in root.rglob("manifest.json"):
+            if mp.is_file():
+                try:
+                    candidates.append((mp.stat().st_mtime, mp))
+                except OSError:
+                    candidates.append((0.0, mp))
+    except OSError:
+        return []
+
+    candidates.sort(key=lambda t: t[0], reverse=True)
+
+    out: list[BackupRunSummary] = []
+    for mtime, mp in candidates:
+        if len(out) >= limit:
+            break
+
+        try:
+            payload = read_manifest_json(mp)
+        except ManifestIOError:
+            continue
+
+        if payload.get("schema_version") != "wcbt_run_manifest_v2":
+            continue
+
+        run_id = payload.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            continue
+
+        if profile_name is not None:
+            payload_profile = payload.get("profile_name")
+            if payload_profile != profile_name:
+                continue
+
+        modified_at_utc = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+
+        def _opt_str(key: str) -> str | None:
+            v = payload.get(key)
+            return v if isinstance(v, str) and v else None
+
+        out.append(
+            BackupRunSummary(
+                run_id=run_id,
+                manifest_path=mp,
+                modified_at_utc=modified_at_utc,
+                created_at_utc=_opt_str("created_at_utc"),
+                archive_root=_opt_str("archive_root"),
+                profile_name=_opt_str("profile_name"),
+                source_root=_opt_str("source_root"),
+            )
+        )
+
+    return out
