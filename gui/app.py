@@ -30,7 +30,7 @@ class AppWindow(QWidget):
         Initialize the main window and construct the tab layout.
         """
         super().__init__()
-        self.setWindowTitle("WCBT GUI Mock (Tabbed, No Engine Wiring)")
+        self.setWindowTitle("WCBT GUI")
         self.resize(1180, 720)
 
         root = QVBoxLayout(self)
@@ -46,7 +46,7 @@ class AppWindow(QWidget):
         f.setBold(True)
         title.setFont(f)
 
-        subtitle = QLabel("GUI mock for UX iteration (no core wiring)")
+        subtitle = QLabel("Tabbed GUI backed by engine services")
         subtitle.setStyleSheet("color: #666;")
 
         header_layout.addWidget(title)

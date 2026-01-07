@@ -184,7 +184,7 @@ class RunTab(QWidget):
         self.summary.setFont(_mono())
         self.summary.setPlainText(
             "Last run summary will appear here.\n\n"
-            "Mock fields:\n"
+            "Fields:\n"
             "- run_id\n"
             "- status\n"
             "- candidates/selected/copied/skipped\n"

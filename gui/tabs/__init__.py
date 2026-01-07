@@ -1,1 +1,1 @@
-"""Tab modules for GUI mock."""
+"""Tab modules for the WCBT GUI."""
