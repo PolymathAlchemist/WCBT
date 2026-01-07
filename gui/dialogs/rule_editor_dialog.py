@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -27,6 +28,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from backup_engine.profile_store.api import RuleSet
+from backup_engine.profile_store.errors import InvalidRuleError
+from backup_engine.profile_store.rules import normalize_rules
 
 
 def _mono() -> QFont:
@@ -104,6 +109,8 @@ class RuleEditorDialog(QDialog):
         root.addWidget(help_box)
 
         # Preview area
+        self._syntax_label = QLabel("")
+        self._syntax_label.setWordWrap(True)
         preview = self._build_preview()
         root.addWidget(preview, 1)
 
@@ -181,38 +188,22 @@ class RuleEditorDialog(QDialog):
         return box
 
     def _build_preview(self) -> QWidget:
-        box = QWidget()
+        box = QGroupBox("Preview")
         layout = QVBoxLayout(box)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-
-        hint = QLabel(
-            "Planned: syntax validation, estimated match counts, and sample paths (no changes to disk)."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #666; font-size: 11px;")
-        layout.addWidget(hint)
-
-        hint = QLabel(
-            "Planned: syntax validation, estimated match counts, and sample paths (no changes to disk)."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #666; font-size: 11px;")
-        layout.addWidget(hint)
+        layout.addWidget(self._syntax_label)
 
         self.preview_text = QPlainTextEdit()
         self.preview_text.setReadOnly(True)
         self.preview_text.setFont(_mono())
-        self.preview_text.setPlainText(
-            "\n".join(
-                [
-                    "Preview (not implemented yet)",
-                    "",
-                    "This build does not scan the filesystem or estimate matches.",
-                ]
-            )
-        )
+        self.preview_text.setPlaceholderText("Preview (not implemented yet).")
         layout.addWidget(self.preview_text, 1)
+
+        hint = QLabel(
+            "Preview is not implemented yet.\n"
+            "This will eventually show a summary of files matched by the rules."
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         return box
 
@@ -223,33 +214,45 @@ class RuleEditorDialog(QDialog):
         self.help_toggle.setArrowType(Qt.DownArrow if is_open else Qt.RightArrow)
 
     def _sync_state(self) -> None:
-        # UI-only guardrails: non-empty pattern required to save.
         text = self.pattern_edit.text().strip()
-        self.btn_save.setEnabled(bool(text))
 
-        # Preview update (honest placeholder; no scanning yet).
+        syntax_ok = True
         if text:
-            self.preview_text.setPlainText(
-                "\n".join(
-                    [
-                        "Preview (not implemented yet)",
-                        f"  pattern: {text}",
-                        "",
-                        "This build does not scan the filesystem or estimate matches.",
-                        "Save the rule, then run a backup to see real results in produced artifacts.",
-                    ]
-                )
-            )
+            try:
+                normalize_rules(RuleSet(include=(text,), exclude=()))
+                self._syntax_label.setText("Syntax: OK")
+            except InvalidRuleError as exc:
+                syntax_ok = False
+                self._syntax_label.setText(f"Syntax: {exc}")
         else:
-            self.preview_text.setPlainText(
-                "\n".join(
-                    [
-                        "Preview (not implemented yet)",
-                        "",
-                        "Enter a pattern to see it echoed here.",
-                    ]
+            self._syntax_label.setText("")
+
+        self.btn_save.setEnabled(bool(text) and syntax_ok)
+
+        # Preview echo only (no scanning).
+        if hasattr(self, "preview_text"):
+            if text:
+                self.preview_text.setPlainText(
+                    "\n".join(
+                        [
+                            "Preview (not implemented yet)",
+                            f"  pattern: {text}",
+                            "",
+                            "This build does not scan the filesystem or estimate matches.",
+                            "Save the rule, then run a backup to see real results in produced artifacts.",
+                        ]
+                    )
                 )
-            )
+            else:
+                self.preview_text.setPlainText(
+                    "\n".join(
+                        [
+                            "Preview (not implemented yet)",
+                            "",
+                            "Enter a pattern to see it echoed here.",
+                        ]
+                    )
+                )
 
     def _on_save(self) -> None:
         pattern = self.pattern_edit.text().strip()

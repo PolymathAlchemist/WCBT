@@ -21,6 +21,7 @@ from typing import Final, Sequence
 from ..paths_and_safety import ProfilePaths, ensure_profile_directories, resolve_profile_paths
 from .api import JobId, JobSummary, ProfileStore, RuleSet
 from .errors import InvalidRuleError, UnknownJobError
+from .rules import normalize_rules
 from .schema import SCHEMA_V1
 
 # Stable UUID namespace for JobId derivation.
@@ -278,10 +279,7 @@ class SqliteProfileStore(ProfileStore):
 
     def save_rules(self, job_id: JobId, name: str, rules: RuleSet) -> None:
         """See ProfileStore.save_rules."""
-        normalized = RuleSet(
-            include=_normalize_patterns(rules.include),
-            exclude=_normalize_patterns(rules.exclude),
-        )
+        normalized = normalize_rules(rules)
 
         with self._connect() as conn:
             _ensure_schema(conn)

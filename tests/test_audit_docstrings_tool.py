@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools.audit_docstrings import Config, audit
+from audit_docstrings import Config, audit
 
 
 def _write(path: Path, text: str) -> None:

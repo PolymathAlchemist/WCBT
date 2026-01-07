@@ -23,10 +23,10 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\backup_engine\manifest_store.py                                |       87 |      197 |      223 |
 | .\gui\tabs\run_tab.py                                            |       55 |        5 |      215 |
 | .\backup_engine\restore\stage.py                                 |       61 |      100 |      187 |
+| .\gui\dialogs\rule_editor_dialog.py                              |       49 |       27 |      186 |
 | .\backup_engine\profile_lock.py                                  |       66 |      114 |      185 |
 | .\gui\adapters\profile_store_adapter.py                          |       37 |       27 |      185 |
-| .\gui\dialogs\rule_editor_dialog.py                              |       46 |       28 |      177 |
-| .\backup_engine\profile_store\sqlite_store.py                    |       54 |      104 |      175 |
+| .\backup_engine\profile_store\sqlite_store.py                    |       54 |      104 |      173 |
 | .\backup_engine\backup\execute.py                                |       54 |      143 |      155 |
 | .\README.md                                                      |       70 |        0 |      149 |
 | .\tests\audit_docstrings.py                                      |       57 |       87 |      128 |
@@ -80,12 +80,14 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\backup_engine\profile_store\api.py                             |       35 |      106 |       25 |
 | .\tests\test_restore_execution_journal.py                        |       12 |        0 |       24 |
 | .\backup_engine\init_profile.py                                  |       13 |       29 |       23 |
+| .\backup_engine\profile_store\rules.py                           |       16 |       43 |       23 |
 | .\tests\test_init_profile.py                                     |        6 |        0 |       22 |
 | .\tests\test_default_data_root.py                                |        9 |        0 |       20 |
 | .\tests\test_cli_smoke.py                                        |       10 |        6 |       19 |
 | .\backup_engine\clock.py                                         |       16 |       31 |       18 |
 | .\cloc_by_file_md.bat                                            |        5 |        2 |       18 |
 | .\tools\minecraft\README.md                                      |        6 |        0 |       16 |
+| .\tests\test_rule_validation.py                                  |       12 |        5 |       15 |
 | .\.idea\inspectionProfiles\Project_Default.xml                   |        0 |        0 |       12 |
 | .\.idea\wcbt.iml                                                 |        0 |        0 |       10 |
 | .\backup_engine\restore\errors.py                                |       24 |       55 |        9 |
@@ -108,5 +110,5 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\gui\__init__.py                                                |        1 |        2 |        0 |
 | .\gui\adapters\__init__.py                                       |        2 |        9 |        0 |
 | .\gui\tabs\__init__.py                                           |        0 |        1 |        0 |
-| --------                                                         | -------- | -------- | -------- |
-| SUM:                                                             |     2575 |     3153 |     7733 |
+| --------                                                         |  ------- | -------- |  ------- |
+| SUM:                                                             |     2606 |     3200 |     7778 |
