@@ -4,7 +4,7 @@ Rule Editor dialog (UI only).
 Purpose:
 - Provide a dedicated Add/Edit dialog for glob-based rules.
 - Include inline, collapsible syntax help (UX docstring).
-- Optional preview area
+- Preview area (not implemented yet; no scanning)
 
 No WCBT engine wiring. No validation beyond basic non-empty pattern.
 """
@@ -186,9 +186,19 @@ class RuleEditorDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        lbl = QLabel("Preview")
-        lbl.setStyleSheet("color: #666;")
-        layout.addWidget(lbl)
+        hint = QLabel(
+            "Planned: syntax validation, estimated match counts, and sample paths (no changes to disk)."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(hint)
+
+        hint = QLabel(
+            "Planned: syntax validation, estimated match counts, and sample paths (no changes to disk)."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(hint)
 
         self.preview_text = QPlainTextEdit()
         self.preview_text.setReadOnly(True)
@@ -196,10 +206,9 @@ class RuleEditorDialog(QDialog):
         self.preview_text.setPlainText(
             "\n".join(
                 [
-                    "No preview yet.",
+                    "Preview (not implemented yet)",
                     "",
-                    "In the real GUI, this will show an estimate of matches and sample paths",
-                    "without modifying any data.",
+                    "This build does not scan the filesystem or estimate matches.",
                 ]
             )
         )
@@ -218,17 +227,16 @@ class RuleEditorDialog(QDialog):
         text = self.pattern_edit.text().strip()
         self.btn_save.setEnabled(bool(text))
 
-        # Preview update (static for now; could be slightly dynamic without parsing)
+        # Preview update (honest placeholder; no scanning yet).
         if text:
             self.preview_text.setPlainText(
                 "\n".join(
                     [
-                        "Preview",
+                        "Preview (not implemented yet)",
                         f"  pattern: {text}",
                         "",
-                        "Would match approximately:",
-                        "  - 1,204 files",
-                        "  - 87 directories",
+                        "This build does not scan the filesystem or estimate matches.",
+                        "Save the rule, then run a backup to see real results in produced artifacts.",
                     ]
                 )
             )
@@ -236,9 +244,9 @@ class RuleEditorDialog(QDialog):
             self.preview_text.setPlainText(
                 "\n".join(
                     [
-                        "No preview yet.",
+                        "Preview (not implemented yet)",
                         "",
-                        "Enter a pattern to see a preview.",
+                        "Enter a pattern to see it echoed here.",
                     ]
                 )
             )
