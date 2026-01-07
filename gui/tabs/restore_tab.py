@@ -77,6 +77,15 @@ def _safe_read_manifest_summary(manifest_path: Path) -> dict[str, object]:
 
 
 class RestoreWorker(QObject):
+    """
+    Background worker that executes a restore run off the UI thread.
+
+    Responsibilities
+    ----------------
+    - Invoke the engine restore service using the configured manifest and destination.
+    - Emit completion or failure signals back to the GUI.
+    """
+
     finished = Signal(object)  # RestoreRunResult
     failed = Signal(str)
 
@@ -97,6 +106,13 @@ class RestoreWorker(QObject):
         verify: str,
         dry_run: bool,
     ) -> None:
+        """
+        Configure the next restore execution parameters.
+
+        Notes
+        -----
+        This method does not perform any I/O. It stores parameters for the next `run()` call.
+        """
         self._manifest_path = manifest_path
         self._destination_root = destination_root
         self._mode = mode
@@ -124,6 +140,21 @@ class RestoreWorker(QObject):
 
 
 class RestoreTab(QWidget):
+    """
+    Restore tab for the WCBT GUI.
+
+    Responsibilities
+    ----------------
+    - List backup runs discovered from run manifests under the selected archive root.
+    - Persist per-job restore defaults (archive root, destination root) via ProfileStore.
+    - Execute restores on a worker thread and present result artifacts to the user.
+
+    Notes
+    -----
+    - The tab does not call the CLI. All operations are engine-backed.
+    - Manifest discovery is read-only and does not modify archives.
+    """
+
     def __init__(self) -> None:
         super().__init__()
 
@@ -371,7 +402,6 @@ class RestoreTab(QWidget):
             return
 
         selected_profile_name = str(self.job_combo.currentText()).strip() or None
-        selected_profile_name = str(self.job_combo.currentText()).strip() or None
         runs = list_backup_runs(root, profile_name=selected_profile_name, limit=500)
 
         for r in runs:
@@ -501,6 +531,13 @@ class RestoreTab(QWidget):
         QMessageBox.critical(self, "Restore Failed", message)
 
     def shutdown(self) -> None:
+        """
+        Shut down background workers and the ProfileStore adapter.
+
+        Notes
+        -----
+        This is intended to be safe to call multiple times.
+        """
         self._thread.quit()
         self._thread.wait(2000)
         self._store.shutdown()

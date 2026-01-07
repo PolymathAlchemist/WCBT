@@ -1,12 +1,16 @@
 """
 Rule Editor dialog (UI only).
 
-Purpose:
+Purpose
+-------
 - Provide a dedicated Add/Edit dialog for glob-based rules.
-- Include inline, collapsible syntax help (UX docstring).
-- Preview area (not implemented yet; no scanning)
+- Expose engine-backed, syntax-only validation for rule patterns.
+- Present an explicit, non-scanning preview placeholder.
 
-No WCBT engine wiring. No validation beyond basic non-empty pattern.
+Notes
+-----
+- No filesystem scanning or preview estimation is performed.
+- Validation is string-only and delegates to engine rule normalization.
 """
 
 from __future__ import annotations
@@ -42,17 +46,32 @@ def _mono() -> QFont:
 
 @dataclass(frozen=True, slots=True)
 class RuleEditorResult:
+    """
+    Result payload returned by RuleEditorDialog.
+
+    Attributes
+    ----------
+    pattern:
+        Normalized glob pattern entered by the user.
+    """
+
     pattern: str
 
 
 class RuleEditorDialog(QDialog):
     """
-    UI-only dialog for adding/editing a rule pattern.
+    Dialog for adding or editing a single rule pattern.
 
-    - Root-relative, / separators, glob syntax.
-    - "Future backups only" messaging.
-    - Collapsible help area.
-    - Preview region (static text for now).
+    Responsibilities
+    ----------------
+    - Collect a root-relative glob pattern from the user.
+    - Perform engine-backed, syntax-only validation.
+    - Present a non-scanning preview placeholder.
+
+    Notes
+    -----
+    - Changes apply to future backups only.
+    - This dialog does not perform filesystem access.
     """
 
     def __init__(
@@ -63,6 +82,20 @@ class RuleEditorDialog(QDialog):
         initial_pattern: str = "",
         mode_label: str = "Rule",
     ) -> None:
+        """
+        Initialize the rule editor dialog.
+
+        Parameters
+        ----------
+        parent:
+            Optional parent widget.
+        title:
+            Window title text.
+        initial_pattern:
+            Initial rule pattern to populate the editor.
+        mode_label:
+            Label prefix used to describe the pattern type.
+        """
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
@@ -188,6 +221,14 @@ class RuleEditorDialog(QDialog):
         return box
 
     def _build_preview(self) -> QWidget:
+        """
+        Construct the preview section.
+
+        Returns
+        -------
+        QWidget
+            Preview container showing syntax status and placeholder text.
+        """
         box = QGroupBox("Preview")
         layout = QVBoxLayout(box)
         layout.addWidget(self._syntax_label)
@@ -214,6 +255,12 @@ class RuleEditorDialog(QDialog):
         self.help_toggle.setArrowType(Qt.DownArrow if is_open else Qt.RightArrow)
 
     def _sync_state(self) -> None:
+        """
+        Synchronize UI state with current editor contents.
+
+        Performs syntax-only validation and updates save enablement
+        and preview placeholder text accordingly.
+        """
         text = self.pattern_edit.text().strip()
 
         syntax_ok = True

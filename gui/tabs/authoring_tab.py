@@ -51,6 +51,17 @@ def _mono() -> QFont:
 
 @dataclass(frozen=True, slots=True)
 class PatternSnapshot:
+    """
+    Snapshot of include/exclude patterns for dirty-state tracking.
+
+    Attributes
+    ----------
+    include:
+        Include patterns in UI order.
+    exclude:
+        Exclude patterns in UI order.
+    """
+
     include: list[str]
     exclude: list[str]
 

@@ -1,7 +1,16 @@
 """
-Run tab mock.
+Run tab (engine-backed).
 
-This is UI only. No WCBT engine integration.
+Purpose
+-------
+- Allow the user to execute backup runs for a selected job.
+- Dispatch backup planning/execution off the UI thread.
+- Present summary output and artifact locations to the user.
+
+Notes
+-----
+- This tab does not invoke the CLI.
+- Backup execution is delegated directly to the engine service.
 """
 
 from __future__ import annotations
@@ -51,6 +60,15 @@ def _format_dt(dt: datetime) -> str:
 
 
 class BackupWorker(QObject):
+    """
+    Background worker that executes backup runs off the UI thread.
+
+    Responsibilities
+    ----------------
+    - Invoke the engine backup service with the configured job and source.
+    - Emit completion or failure signals back to the GUI.
+    """
+
     finished = Signal(object)  # BackupRunResult
     failed = Signal(str)
 
@@ -60,6 +78,13 @@ class BackupWorker(QObject):
         self._source: Path | None = None
 
     def configure(self, job_id: str, source: Path) -> None:
+        """
+        Configure parameters for the next backup execution.
+
+        Notes
+        -----
+        This method performs no I/O. It stores parameters for the next `run()` call.
+        """
         self._job_id = job_id
         self._source = source
 
@@ -85,6 +110,21 @@ class BackupWorker(QObject):
 
 
 class RunTab(QWidget):
+    """
+    Run tab for the WCBT GUI.
+
+    Responsibilities
+    ----------------
+    - Select a job and source folder for backup execution.
+    - Dispatch backup runs via a background worker thread.
+    - Display execution status and summary artifacts.
+
+    Notes
+    -----
+    - This tab performs dry-run backups by default.
+    - All execution is engine-backed; no CLI calls are made.
+    """
+
     def __init__(self) -> None:
         super().__init__()
         self._active_job_id: str | None = None
@@ -261,7 +301,13 @@ class RunTab(QWidget):
         self._active_job_id = self._selected_job_id()
 
     def shutdown(self) -> None:
-        """Shut down background worker threads cleanly."""
+        """
+        Shut down background worker threads and the ProfileStore adapter.
+
+        Notes
+        -----
+        This method is safe to call multiple times.
+        """
         self._thread.quit()
         self._thread.wait(2000)
         self._store.shutdown()

@@ -16,7 +16,19 @@ from gui.tabs.run_tab import RunTab
 
 
 class AppWindow(QWidget):
+    """
+    Main window for the WCBT GUI.
+
+    Responsibilities
+    ----------------
+    - Host the primary tabbed interface (Run, Restore, Authoring)
+    - Coordinate clean shutdown of tab-owned background workers
+    """
+
     def __init__(self) -> None:
+        """
+        Initialize the main window and construct the tab layout.
+        """
         super().__init__()
         self.setWindowTitle("WCBT GUI Mock (Tabbed, No Engine Wiring)")
         self.resize(1180, 720)
@@ -58,7 +70,14 @@ class AppWindow(QWidget):
         root.addWidget(tabs, 1)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        """Shutdown background workers before closing the application."""
+        """
+        Handle window close by shutting down background workers.
+
+        Parameters
+        ----------
+        event:
+            Qt close event.
+        """
         try:
             if hasattr(self, "run_tab"):
                 self.run_tab.shutdown()
@@ -73,6 +92,14 @@ class AppWindow(QWidget):
 
 
 def main() -> int:
+    """
+    Run the WCBT GUI application.
+
+    Returns
+    -------
+    int
+        Qt application exit code.
+    """
     app = QApplication(sys.argv)
     w = AppWindow()
     w.show()
