@@ -106,6 +106,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if "is_deleted" not in col_names:
         conn.execute("ALTER TABLE jobs ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
 
+    # Optional per-job UI state (restore tab).
+    if "archive_root" not in col_names:
+        conn.execute("ALTER TABLE jobs ADD COLUMN archive_root TEXT NULL")
+    if "restore_dest_root" not in col_names:
+        conn.execute("ALTER TABLE jobs ADD COLUMN restore_dest_root TEXT NULL")
+
 
 def _get_or_create_profile_id(conn: sqlite3.Connection) -> str:
     """
@@ -162,6 +168,49 @@ class SqliteProfileStore(ProfileStore):
                 "SELECT job_id, name FROM jobs WHERE is_deleted = 0 ORDER BY name ASC"
             ).fetchall()
         return [JobSummary(job_id=str(r["job_id"]), name=str(r["name"])) for r in rows]
+
+    def load_restore_defaults(self, job_id: JobId) -> tuple[str | None, str | None]:
+        """
+        Load persisted Restore tab defaults for a job.
+
+        Returns
+        -------
+        tuple[str | None, str | None]
+            (archive_root, restore_dest_root)
+        """
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            row = conn.execute(
+                "SELECT archive_root, restore_dest_root FROM jobs "
+                "WHERE job_id = ? AND is_deleted = 0",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise UnknownJobError(f"Unknown job_id: {job_id}")
+            return (
+                str(row["archive_root"]) if row["archive_root"] is not None else None,
+                str(row["restore_dest_root"]) if row["restore_dest_root"] is not None else None,
+            )
+
+    def save_restore_defaults(
+        self,
+        job_id: JobId,
+        *,
+        archive_root: str | None,
+        restore_dest_root: str | None,
+    ) -> None:
+        """
+        Persist Restore tab defaults for a job.
+        """
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            cur = conn.execute(
+                "UPDATE jobs SET archive_root = ?, restore_dest_root = ? "
+                "WHERE job_id = ? AND is_deleted = 0",
+                (archive_root, restore_dest_root, job_id),
+            )
+            if cur.rowcount == 0:
+                raise UnknownJobError(f"Unknown job_id: {job_id}")
 
     def create_job(self, name: str) -> JobId:
         """

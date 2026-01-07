@@ -130,6 +130,8 @@ class RestoreTab(QWidget):
         self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
         self._store.jobs_loaded.connect(self._on_jobs_loaded)
         self._store.error.connect(self._on_store_error)
+        self._store.restore_defaults_loaded.connect(self._on_restore_defaults_loaded)
+        self._store.restore_defaults_saved.connect(self._on_restore_defaults_saved)
 
         self._selected_manifest_path: Path | None = None
 
@@ -142,7 +144,7 @@ class RestoreTab(QWidget):
 
         self.job_combo = QComboBox()
         self.job_combo.setEnabled(False)
-        self.job_combo.currentIndexChanged.connect(self._refresh_history)
+        self.job_combo.currentIndexChanged.connect(self._on_job_changed)
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Filter runs (status, run id, etc.)")
@@ -160,7 +162,7 @@ class RestoreTab(QWidget):
 
         self.archive_root = QLineEdit()
         self.archive_root.setPlaceholderText("Select backup archive root to scan for manifests…")
-        self.archive_root.textChanged.connect(self._refresh_history)
+        self.archive_root.textChanged.connect(self._on_archive_root_changed)
 
         btn_pick_archive = QPushButton("Browse…")
         btn_pick_archive.clicked.connect(self._pick_archive_root)
@@ -209,6 +211,7 @@ class RestoreTab(QWidget):
         restore_layout = QFormLayout(restore_box)
 
         self.dest = QLineEdit()
+        self.dest.textChanged.connect(self._on_dest_changed)
         btn_browse = QPushButton("Browse…")
         btn_browse.clicked.connect(self._pick_dest)
 
@@ -259,6 +262,12 @@ class RestoreTab(QWidget):
     def _selected_job_id(self) -> str:
         return str(self.job_combo.currentData())
 
+    def _on_job_changed(self) -> None:
+        job_id = self._selected_job_id()
+        if job_id:
+            self._store.request_load_restore_defaults.emit(job_id)
+        self._refresh_history()
+
     def _on_jobs_loaded(self, jobs_obj: object) -> None:
         try:
             jobs = list(jobs_obj)
@@ -282,10 +291,64 @@ class RestoreTab(QWidget):
             return
 
         self.job_combo.setEnabled(True)
-        self._refresh_history()
+        self._on_job_changed()
 
     def _on_store_error(self, job_id: str, message: str) -> None:
         QMessageBox.critical(self, "Profile Store Error", message)
+
+    def _on_restore_defaults_loaded(self, job_id: str, payload: object) -> None:
+        # Only apply if the currently selected job matches.
+        if job_id != self._selected_job_id():
+            return
+
+        try:
+            data = payload
+            assert isinstance(data, dict)
+            archive_root = data.get("archive_root")
+            restore_dest_root = data.get("restore_dest_root")
+            assert archive_root is None or isinstance(archive_root, str)
+            assert restore_dest_root is None or isinstance(restore_dest_root, str)
+        except Exception:
+            return
+
+        self.archive_root.blockSignals(True)
+        self.dest.blockSignals(True)
+        try:
+            if archive_root is not None:
+                self.archive_root.setText(archive_root)
+            if restore_dest_root is not None:
+                self.dest.setText(restore_dest_root)
+        finally:
+            self.archive_root.blockSignals(False)
+            self.dest.blockSignals(False)
+
+    def _on_restore_defaults_saved(self, job_id: str) -> None:
+        # No UI action needed; this is here for future status indicators.
+        _ = job_id
+
+    def _on_archive_root_changed(self) -> None:
+        job_id = self._selected_job_id()
+        if job_id:
+            self._store.request_save_restore_defaults.emit(
+                job_id,
+                {
+                    "archive_root": self.archive_root.text().strip() or None,
+                    "restore_dest_root": self.dest.text().strip() or None,
+                },
+            )
+        self._refresh_history()
+
+    def _on_dest_changed(self) -> None:
+        job_id = self._selected_job_id()
+        if not job_id:
+            return
+        self._store.request_save_restore_defaults.emit(
+            job_id,
+            {
+                "archive_root": self.archive_root.text().strip() or None,
+                "restore_dest_root": self.dest.text().strip() or None,
+            },
+        )
 
     def _refresh_history(self) -> None:
         needle = self.filter_edit.text().strip().lower()

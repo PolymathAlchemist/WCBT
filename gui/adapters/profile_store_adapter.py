@@ -45,6 +45,8 @@ class ProfileStoreWorker(QObject):
     job_created = Signal(str)  # job_id
     job_renamed = Signal(str)  # job_id
     job_deleted = Signal(str)  # job_id
+    restore_defaults_loaded = Signal(str, object)  # job_id, dict[str, str | None]
+    restore_defaults_saved = Signal(str)  # job_id
 
     def __init__(self, profile_name: str, data_root: Path | None) -> None:
         super().__init__()
@@ -97,6 +99,47 @@ class ProfileStoreWorker(QObject):
         self.job_deleted.emit(job_id)
 
     @Slot(str)
+    def load_restore_defaults(self, job_id: str) -> None:
+        """Load restore defaults for job_id and emit results."""
+        try:
+            archive_root, restore_dest_root = self._store.load_restore_defaults(job_id)
+        except UnknownJobError:
+            self.unknown_job.emit(job_id)
+            return
+        except Exception as e:
+            self.error.emit(job_id, str(e))
+            return
+
+        self.restore_defaults_loaded.emit(
+            job_id,
+            {"archive_root": archive_root, "restore_dest_root": restore_dest_root},
+        )
+
+    @Slot(str, object)
+    def save_restore_defaults(self, job_id: str, payload: object) -> None:
+        """Save restore defaults for job_id and emit completion."""
+        try:
+            data = payload
+            assert isinstance(data, dict)
+            archive_root = data.get("archive_root")
+            restore_dest_root = data.get("restore_dest_root")
+            assert archive_root is None or isinstance(archive_root, str)
+            assert restore_dest_root is None or isinstance(restore_dest_root, str)
+            self._store.save_restore_defaults(
+                job_id,
+                archive_root=archive_root,
+                restore_dest_root=restore_dest_root,
+            )
+        except UnknownJobError:
+            self.unknown_job.emit(job_id)
+            return
+        except Exception as e:
+            self.error.emit(job_id, str(e))
+            return
+
+        self.restore_defaults_saved.emit(job_id)
+
+    @Slot(str)
     def load_rules(self, job_id: str) -> None:
         """Load rules for job_id and emit results."""
         try:
@@ -138,6 +181,8 @@ class ProfileStoreAdapter(QObject):
     request_create_job = Signal(str)
     request_rename_job = Signal(str, str)
     request_delete_job = Signal(str)
+    request_load_restore_defaults = Signal(str)
+    request_save_restore_defaults = Signal(str, object)
 
     # Results (worker emits; adapter forwards)
     rules_loaded = Signal(str, object)  # job_id, GuiRuleSet
@@ -148,6 +193,8 @@ class ProfileStoreAdapter(QObject):
     job_created = Signal(str)  # job_id
     job_renamed = Signal(str)  # job_id
     job_deleted = Signal(str)  # job_id
+    restore_defaults_loaded = Signal(str, object)  # job_id, dict[str, str | None]
+    restore_defaults_saved = Signal(str)  # job_id
 
     def __init__(self, profile_name: str, data_root: Path | None = None) -> None:
         super().__init__()
@@ -175,6 +222,12 @@ class ProfileStoreAdapter(QObject):
         self.request_delete_job.connect(
             self._worker.delete_job, type=Qt.ConnectionType.QueuedConnection
         )
+        self.request_load_restore_defaults.connect(
+            self._worker.load_restore_defaults, type=Qt.ConnectionType.QueuedConnection
+        )
+        self.request_save_restore_defaults.connect(
+            self._worker.save_restore_defaults, type=Qt.ConnectionType.QueuedConnection
+        )
 
         # Forward results to GUI.
         self._worker.rules_loaded.connect(self.rules_loaded)
@@ -185,6 +238,8 @@ class ProfileStoreAdapter(QObject):
         self._worker.job_created.connect(self.job_created)
         self._worker.job_renamed.connect(self.job_renamed)
         self._worker.job_deleted.connect(self.job_deleted)
+        self._worker.restore_defaults_loaded.connect(self.restore_defaults_loaded)
+        self._worker.restore_defaults_saved.connect(self.restore_defaults_saved)
 
         self._thread.start()
 

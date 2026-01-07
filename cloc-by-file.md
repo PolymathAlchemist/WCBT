@@ -13,8 +13,8 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | File                                                             |    blank |  comment |     code |
 |:-----------------------------------------------------------------|---------:|---------:|---------:|
 | .\gui\tabs\authoring_tab.py                                      |      129 |       56 |      486 |
+| .\gui\tabs\restore_tab.py                                        |       99 |        8 |      403 |
 | .\backup_engine\verify.py                                        |       98 |      165 |      372 |
-| .\gui\tabs\restore_tab.py                                        |       92 |        6 |      349 |
 | .\backup_engine\restore\service.py                               |       73 |      134 |      325 |
 | .\backup_engine\restore\verify.py                                |       68 |      116 |      252 |
 | .\backup_engine\backup\service.py                                |       56 |      112 |      251 |
@@ -24,11 +24,11 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\gui\tabs\run_tab.py                                            |       55 |        5 |      215 |
 | .\backup_engine\restore\stage.py                                 |       61 |      100 |      187 |
 | .\backup_engine\profile_lock.py                                  |       66 |      114 |      185 |
+| .\gui\adapters\profile_store_adapter.py                          |       37 |       27 |      185 |
 | .\gui\dialogs\rule_editor_dialog.py                              |       46 |       28 |      177 |
+| .\backup_engine\profile_store\sqlite_store.py                    |       54 |      104 |      175 |
 | .\backup_engine\backup\execute.py                                |       54 |      143 |      155 |
 | .\README.md                                                      |       70 |        0 |      149 |
-| .\backup_engine\profile_store\sqlite_store.py                    |       50 |       93 |      141 |
-| .\gui\adapters\profile_store_adapter.py                          |       33 |       25 |      136 |
 | .\tests\audit_docstrings.py                                      |       57 |       87 |      128 |
 | .\tools\audit_docstrings.py                                      |       57 |       86 |      127 |
 | .\tests\test_profile_lock.py                                     |       31 |        0 |      126 |
@@ -108,5 +108,5 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\gui\__init__.py                                                |        1 |        2 |        0 |
 | .\gui\adapters\__init__.py                                       |        2 |        9 |        0 |
 | .\gui\tabs\__init__.py                                           |        0 |        1 |        0 |
-| --------                                                         | -------  | -------  | -------  |
-| SUM:                                                             |     2560 |     3138 |     7596 |
+| --------                                                         | -------- | -------- | -------- |
+| SUM:                                                             |     2575 |     3153 |     7733 |
