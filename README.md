@@ -20,7 +20,7 @@ WCBT has been generalized without abandoning those safety constraints.
 **WCBT is not:**
 - A convenience wrapper around `rsync`
 - A silent or "best-effort" backup tool
-- A UI-first consumer application (yet)
+- A UI-first consumer application
 
 ---
 
@@ -54,13 +54,14 @@ WCBT has been generalized without abandoning those safety constraints.
 wcbt/
 ├── backup_engine/        # Core backup / restore / verify engine
 │   ├── backup/
+│   ├── profile_store/    # Persistent job configuration and defaults (SQLite)
 │   ├── restore/
 │   ├── verify/
 │   └── data_models.py
 ├── gui/                  # GUI (PySide) — engine-backed, under active development
-│   ├── tabs/
-│   ├── dialogs/
-│   └── adapters/
+│   ├── tabs/             # Run, Restore, Authoring
+│   ├── dialogs/          # Rule editor and supporting dialogs
+│   └── adapters/         # Thread-safe adapters to engine services
 ├── tests/                # Artifact-driven test suite
 ├── wcbt/                 # CLI entrypoints
 └── README.md
@@ -98,7 +99,9 @@ pip install -r requirements.txt
 
 ## Running WCBT (CLI)
 
-WCBT is currently CLI-first.
+WCBT exposes the same engine services via both CLI and GUI front-ends.
+The CLI remains the most stable interface.
+
 
 ### Backup
 
@@ -164,10 +167,14 @@ Current state:
 - Backup and restore execution use engine services directly (no CLI calls)
 - Restore history is discovered from real on-disk artifacts
 - GUI execution path is fully de-mocked
-- The GUI is intended as a structured front-end to the same artifact-driven engine,
-not a separate execution layer.
+- The GUI is a structured front-end to the same artifact-driven engine used by the CLI.
+It does not invoke the CLI and does not introduce alternate execution paths.
+- Rule authoring includes engine-backed, syntax-only validation (no scanning)
 
-The GUI is not yet considered stable for end users.
+Stability note:
+- Engine and artifact formats are considered stable.
+- GUI behavior and layout may evolve, but remain engine-faithful.
+
 
 To run the GUI (development):
 
