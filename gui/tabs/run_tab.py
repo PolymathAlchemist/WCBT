@@ -76,8 +76,9 @@ class BackupWorker(QObject):
         super().__init__()
         self._job_id: str | None = None
         self._source: Path | None = None
+        self._mode: str = "plan"
 
-    def configure(self, job_id: str, source: Path) -> None:
+    def configure(self, job_id: str, source: Path, mode: str) -> None:
         """
         Configure parameters for the next backup execution.
 
@@ -87,6 +88,7 @@ class BackupWorker(QObject):
         """
         self._job_id = job_id
         self._source = source
+        self._mode = mode
 
     @Slot()
     def run(self) -> None:
@@ -97,14 +99,37 @@ class BackupWorker(QObject):
             self.failed.emit("No source folder selected.")
             return
         try:
-            result = run_backup(
-                profile_name="default",
-                source=self._source,
-                dry_run=True,
-                data_root=None,
-                write_plan=True,
-            )
+            mode = self._mode
+
+            if mode == "plan":
+                result = run_backup(
+                    profile_name="default",
+                    source=self._source,
+                    dry_run=True,
+                    data_root=None,
+                    write_plan=True,
+                )
+            elif mode == "materialize":
+                result = run_backup(
+                    profile_name="default",
+                    source=self._source,
+                    dry_run=False,
+                    data_root=None,
+                    execute=False,
+                )
+            elif mode == "execute":
+                result = run_backup(
+                    profile_name="default",
+                    source=self._source,
+                    dry_run=False,
+                    data_root=None,
+                    execute=True,
+                )
+            else:
+                raise ValueError(f"Unknown run mode: {mode!r}")
+
             self.finished.emit(result)
+
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -137,17 +162,17 @@ class RunTab(QWidget):
 
         job_box = QGroupBox("Job")
         job_layout = QHBoxLayout(job_box)
-        job_grid = QVBoxLayout()
-        job_layout.addLayout(job_grid, 1)
+        job_stack = QVBoxLayout()
+        job_layout.addLayout(job_stack, 1)
 
         self.job_combo = QComboBox()
         self.job_combo.setEnabled(False)
         self.job_combo.currentIndexChanged.connect(self._on_job_changed)
 
-        job_row = QHBoxLayout()
-        job_row.addWidget(QLabel("Selected job:"))
-        job_row.addWidget(self.job_combo, 1)
-        job_grid.addLayout(job_row)
+        job_select_row = QHBoxLayout()
+        job_select_row.addWidget(QLabel("Selected job:"))
+        job_select_row.addWidget(self.job_combo, 1)
+        job_stack.addLayout(job_select_row)
 
         self.source_edit = QLineEdit()
         self.source_edit.setPlaceholderText("Choose source folder to back up…")
@@ -155,11 +180,20 @@ class RunTab(QWidget):
         self.btn_browse_source = QPushButton("Browse…")
         self.btn_browse_source.clicked.connect(self._browse_source)
 
-        src_row = QHBoxLayout()
-        src_row.addWidget(QLabel("Source folder:"))
-        src_row.addWidget(self.source_edit, 1)
-        src_row.addWidget(self.btn_browse_source)
-        job_grid.addLayout(src_row)
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("Source folder:"))
+        source_row.addWidget(self.source_edit, 1)
+        source_row.addWidget(self.btn_browse_source)
+        job_stack.addLayout(source_row)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Plan only (no side effects)", "plan")
+        self.mode_combo.addItem("Materialize (create run + manifest, no copy)", "materialize")
+        self.mode_combo.addItem("Execute (copy files into run)", "execute")
+
+        run_mode_row = QHBoxLayout()
+        run_mode_row.addWidget(QLabel("Run mode:"))
+        run_mode_row.addWidget(self.mode_combo, 1)
+        job_stack.addLayout(run_mode_row)
 
         self.btn_backup_now = QPushButton("Backup Now")
         self.btn_backup_now.clicked.connect(self._backup_now)
@@ -238,10 +272,17 @@ class RunTab(QWidget):
             return
 
         self.btn_backup_now.setEnabled(False)
-        self.status_label.setText(f"Planning: {self.job_combo.currentText()} …")
-        self.summary.setPlainText("Running backup plan…")
+        mode = str(self.mode_combo.currentData())
+        action = {
+            "plan": "Planning",
+            "materialize": "Materializing",
+            "execute": "Executing",
+        }.get(mode, "Running")
 
-        self._worker.configure(job_id, source)
+        self.status_label.setText(f"{action}: {self.job_combo.currentText()} …")
+        self.summary.setPlainText(f"{action} backup…")
+
+        self._worker.configure(job_id, source, mode)
         QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
 
     def _open_artifacts(self) -> None:
