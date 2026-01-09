@@ -92,6 +92,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     mode = backup_p.add_mutually_exclusive_group(required=False)
 
+    backup_p.add_argument(
+        "--compress",
+        action="store_true",
+        help="After --execute completes, create a derived compressed artifact of the run directory.",
+    )
+
+    backup_p.add_argument(
+        "--compression",
+        choices=["tar.zst", "zip", "none"],
+        default="none",
+        help="Compression format for derived artifacts (default: none).",
+    )
+
     mode.add_argument(
         "--dry-run",
         action="store_true",
@@ -255,6 +268,8 @@ def main(argv: list[str] | None = None) -> int:
                 execute=bool(args.execute),
                 force=bool(args.force),
                 break_lock=bool(args.break_lock),
+                compress=bool(args.compress),
+                compression=str(args.compression),
             )
         except (SafetyViolationError, WcbtError, ValueError) as exc:
             print(f"ERROR: {exc}")

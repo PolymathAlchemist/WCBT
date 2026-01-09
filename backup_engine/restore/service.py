@@ -23,6 +23,72 @@ __all__ = [
 ]
 
 
+def _resolve_manifest_input(
+    *,
+    manifest_input: Path,
+    destination_root: Path,
+) -> tuple[Path, Path | None]:
+    """
+    Resolve a restore input into a concrete manifest.json path.
+
+    Parameters
+    ----------
+    manifest_input:
+        Path provided by the caller. May be:
+        - a manifest.json file
+        - a run directory containing manifest.json
+        - a compressed archive (.zip or .tar.zst) containing a run directory
+    destination_root:
+        Destination root used to place extraction staging (when needed).
+
+    Returns
+    -------
+    tuple[pathlib.Path, pathlib.Path | None]
+        (resolved_manifest_path, extracted_root_or_none)
+
+    Raises
+    ------
+    ValueError
+        If the input cannot be resolved to a manifest.json.
+    RuntimeError
+        If extraction requires optional dependencies (tar.zst without zstandard).
+    """
+    p = manifest_input.expanduser()
+
+    if p.is_dir():
+        candidate = p / "manifest.json"
+        if candidate.is_file():
+            return candidate, None
+        raise ValueError(f"Run directory does not contain manifest.json: {p}")
+
+    lower = p.name.lower()
+    if lower.endswith(".zip") or lower.endswith(".tar.zst") or lower.endswith(".tarzst"):
+        from datetime import datetime, timezone
+
+        from backup_engine.compression import extract_archive
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+        extract_root = destination_root / ".wcbt_restore" / "_extract" / stamp
+        extract_archive(archive_path=p, destination_dir=extract_root)
+
+        # Expect exactly one top-level directory (run_id)
+        children = [c for c in extract_root.iterdir() if c.is_dir()]
+        if len(children) != 1:
+            raise ValueError(
+                f"Expected archive to contain exactly one run directory; found {len(children)} at {extract_root}"
+            )
+        manifest_path = children[0] / "manifest.json"
+        if not manifest_path.is_file():
+            raise ValueError(f"Extracted run directory missing manifest.json: {children[0]}")
+        return manifest_path, extract_root
+
+    # Otherwise must be a manifest.json file
+    if p.is_file():
+        return p, None
+
+    raise ValueError(f"Invalid manifest input: {manifest_input}")
+
+
 def _restore_artifacts_root(destination_root: Path, run_id: str) -> Path:
     """
     Return the root directory for restore artifacts.
@@ -255,7 +321,12 @@ def run_restore(
 
     clock_to_use = clock if clock is not None else SystemClock()
 
-    run_payload = read_manifest_json(manifest_path)
+    resolved_manifest_path, _extracted_root = _resolve_manifest_input(
+        manifest_input=manifest_path,
+        destination_root=destination_root,
+    )
+    run_payload = read_manifest_json(resolved_manifest_path)
+    manifest_path = resolved_manifest_path
     schema_version = run_payload.get("schema_version")
     if schema_version != "wcbt_run_manifest_v2":
         raise RestoreManifestError(f"Unsupported manifest schema_version: {schema_version!r}")

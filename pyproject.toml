@@ -9,6 +9,7 @@ authors = [{ name = "Eric J. Turman" }]
 
 dependencies = [
     "pyside6>=6.10.1",
+    "zstandard>=0.22.0",
 ]
 
 [build-system]

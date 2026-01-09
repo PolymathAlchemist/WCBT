@@ -67,3 +67,22 @@ def test_restore_verify_accepts_supported_values(verify: str) -> None:
         ],
     )
     assert getattr(args, "verify") == verify
+
+
+def test_backup_parser_exposes_compression_flags_and_defaults() -> None:
+    parser = _build_parser()
+
+    args = _parse(
+        parser,
+        [
+            "backup",
+            "--profile",
+            "Example",
+            "--source",
+            "C:/tmp/source",
+        ],
+    )
+
+    assert getattr(args, "command") == "backup"
+    assert getattr(args, "compress") is False
+    assert getattr(args, "compression") == "none"

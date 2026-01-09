@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from backup_engine.backup.service import BackupRunResult, run_backup
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
+from gui.settings_store import load_gui_settings
 
 
 def _mono() -> QFont:
@@ -125,6 +126,16 @@ class BackupWorker(QObject):
                     data_root=None,
                     execute=True,
                 )
+            elif mode == "execute+compress":
+                result = run_backup(
+                    profile_name="default",
+                    source=self._source,
+                    dry_run=False,
+                    data_root=None,
+                    execute=True,
+                    compress=True,
+                    compression="zip",
+                )
             else:
                 raise ValueError(f"Unknown run mode: {mode!r}")
 
@@ -189,11 +200,15 @@ class RunTab(QWidget):
         self.mode_combo.addItem("Plan only (no side effects)", "plan")
         self.mode_combo.addItem("Materialize (create run + manifest, no copy)", "materialize")
         self.mode_combo.addItem("Execute (copy files into run)", "execute")
+        self.mode_combo.addItem("Execute + Compress (copy files, then archive)", "execute+compress")
 
         run_mode_row = QHBoxLayout()
         run_mode_row.addWidget(QLabel("Run mode:"))
         run_mode_row.addWidget(self.mode_combo, 1)
         job_stack.addLayout(run_mode_row)
+
+        self._settings = load_gui_settings(data_root=None)
+        self._apply_default_run_mode()
 
         self.btn_backup_now = QPushButton("Backup Now")
         self.btn_backup_now.clicked.connect(self._backup_now)
@@ -250,6 +265,16 @@ class RunTab(QWidget):
         if directory:
             self.source_edit.setText(directory)
 
+    def _apply_default_run_mode(self) -> None:
+        wanted = getattr(self, "_settings", None)
+        if wanted is None:
+            return
+        mode = wanted.default_run_mode
+        for i in range(self.mode_combo.count()):
+            if str(self.mode_combo.itemData(i)) == mode:
+                self.mode_combo.setCurrentIndex(i)
+                return
+
     def _selected_job_id(self) -> str | None:
         if self.job_combo.currentIndex() < 0:
             return None
@@ -277,6 +302,7 @@ class RunTab(QWidget):
             "plan": "Planning",
             "materialize": "Materializing",
             "execute": "Executing",
+            "execute+compress": "Executing + Compressing",
         }.get(mode, "Running")
 
         self.status_label.setText(f"{action}: {self.job_combo.currentText()} …")

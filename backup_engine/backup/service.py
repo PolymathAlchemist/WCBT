@@ -99,6 +99,8 @@ def run_backup(
     overwrite_plan: bool = False,
     clock: Clock | None = None,
     execute: bool = False,
+    compress: bool = False,
+    compression: str = "none",
     force: bool = False,
     break_lock: bool = False,
 ) -> BackupRunResult:
@@ -163,6 +165,10 @@ def run_backup(
         raise ValueError("max_items must be non-negative.")
     if execute and dry_run:
         raise ValueError("execute=True is not valid in dry-run mode.")
+    if compress and not execute:
+        raise ValueError(
+            "compress=True is only valid when execute=True (post-execute compression)."
+        )
 
     run_clock = clock or SystemClock()
 
@@ -260,10 +266,55 @@ def run_backup(
             reserved_paths=(materialized.plan_text_path, materialized.manifest_path),
         )
 
+        compressed_path: Path | None = None
+        compression_used = compression
+
+        if compress or (compression_used != "none"):
+            from backup_engine.compression import CompressionFormat, compress_run_directory
+
+            requested = compression_used
+            if compress and requested == "none":
+                requested = "tar.zst"
+
+            fmt = CompressionFormat(requested)
+
+            # Derived artifact lives next to the run directory
+            if fmt is CompressionFormat.ZIP:
+                out = materialized.run_root.with_suffix(".zip")
+                compressed_path = compress_run_directory(
+                    run_root=materialized.run_root,
+                    output_path=out,
+                    format=CompressionFormat.ZIP,
+                ).archive_path
+            elif fmt is CompressionFormat.TAR_ZST:
+                out = materialized.run_root.with_suffix(".tar.zst")
+                try:
+                    compressed_path = compress_run_directory(
+                        run_root=materialized.run_root,
+                        output_path=out,
+                        format=CompressionFormat.TAR_ZST,
+                    ).archive_path
+                except RuntimeError:
+                    # Optional fallback to zip when tar.zst is unavailable
+                    fallback = materialized.run_root.with_suffix(".zip")
+                    compressed_path = compress_run_directory(
+                        run_root=materialized.run_root,
+                        output_path=fallback,
+                        format=CompressionFormat.ZIP,
+                    ).archive_path
+                    print()
+                    print("NOTE: tar.zst unavailable; fell back to zip.")
+            else:
+                compressed_path = None
+
+            if compressed_path is not None:
+                print(f"  Compressed    : {compressed_path}")
+
         updated_manifest = _build_executed_run_manifest(
             base_manifest=materialized.manifest,
             execution_summary=summary,
         )
+
         write_run_manifest_atomic(materialized.manifest_path, updated_manifest)
 
         print()
@@ -278,17 +329,17 @@ def run_backup(
                 "Copy execution failed. See manifest.json for per-operation results."
             )
 
-    return BackupRunResult(
-        run_id=archive_id,
-        profile_name=profile_name,
-        source_root=source_root,
-        archive_root=archive_root,
-        dry_run=False,
-        report_text=report_text,
-        plan_text_path=materialized.plan_text_path,
-        manifest_path=materialized.manifest_path,
-        executed=True,
-    )
+        return BackupRunResult(
+            run_id=archive_id,
+            profile_name=profile_name,
+            source_root=source_root,
+            archive_root=archive_root,
+            dry_run=False,
+            report_text=report_text,
+            plan_text_path=materialized.plan_text_path,
+            manifest_path=materialized.manifest_path,
+            executed=True,
+        )
 
 
 def _build_executed_run_manifest(
