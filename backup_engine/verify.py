@@ -565,7 +565,7 @@ def _write_verify_report(
     *,
     run_id: str,
     algorithm: str,
-    counts: _VerifyCounts,
+    counts: VerificationCounts,
     status_counts: VerificationStatusCounts,
     records: list[dict[str, Any]],
 ) -> None:
@@ -593,13 +593,16 @@ def _write_verify_report(
     - verify_report.jsonl
     - verify_summary.txt
     """
-    verify_report = {
+    report_payload = {
         "schema": "wcbt_verify_report_v1",
         "run_id": run_id,
         "algorithm": algorithm,
-        "verified": counts.verified,
-        "failed": counts.failed,
-        "not_applicable": counts.not_applicable,
+        "counts": {
+            "verified": counts.verified,
+            "failed": counts.failed,
+            "not_applicable": counts.not_applicable,
+            "total_verifiable": counts.total_verifiable,
+        },
         "status_counts": {
             "ok": status_counts.ok,
             "missing": status_counts.missing,
@@ -608,12 +611,13 @@ def _write_verify_report(
         },
     }
 
-    write_json_atomic(run_root / "verify_report.json", verify_report)
+    write_json_atomic(run_root / "verify_report.json", report_payload)
 
     jsonl_path = run_root / "verify_report.jsonl"
-    with jsonl_path.open("w", encoding="utf-8") as fh:
+    with jsonl_path.open("w", encoding="utf-8", newline="\n") as fh:
         for record in records:
-            fh.write(json.dumps(record) + "\n")
+            fh.write(json.dumps(record, sort_keys=True, ensure_ascii=False))
+            fh.write("\n")
 
     summary_lines = [
         "WCBT Verify Report",

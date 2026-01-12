@@ -28,14 +28,18 @@ def _find_single_backup_manifest(data_root: Path) -> Path:
     If multiple candidates exist, we fail with a helpful message so the layout can be
     made explicit later (or the selector can be tightened).
     """
-    candidates = sorted(p for p in data_root.rglob("*.json") if "manifest" in p.name.lower())
+    candidates = sorted(
+        manifest_path
+        for manifest_path in data_root.rglob("manifest.json")
+        if manifest_path.is_file()
+    )
 
     if len(candidates) == 1:
         return candidates[0]
 
     tree_listing = "\n".join(str(p.relative_to(data_root)) for p in sorted(data_root.rglob("*")))
     raise AssertionError(
-        "Expected exactly one '*manifest*.json' under data_root.\n"
+        "Expected exactly one 'manifest.json' under data_root.\n"
         f"Found {len(candidates)} candidates:\n"
         + "\n".join(f"  - {p}" for p in candidates)
         + "\n\n"
@@ -56,7 +60,7 @@ def _find_single_backup_archive(data_root: Path) -> Path:
 
     tree_listing = "\n".join(str(p.relative_to(data_root)) for p in sorted(data_root.rglob("*")))
     raise AssertionError(
-        "Expected exactly one '*.zip' under data_root.\n"
+        "Expected exactly one '*.zip' or '*.tar.zst' under data_root.\n"
         f"Found {len(candidates)} candidates:\n"
         + "\n".join(f"  - {p}" for p in candidates)
         + "\n\n"
@@ -80,7 +84,7 @@ def _assert_tree_matches(source_root: Path, restored_root: Path, files: list[_Fi
         )
 
 
-def test_e2e_backup_then_restore_verify_size_and_artifacts_survive(tmp_path: Path) -> None:
+def test_end_to_end_backup_then_restore_verify_size_and_artifacts_survive(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     data_root = tmp_path / "data_root"
     restore_destination = tmp_path / "restore_destination"
@@ -95,7 +99,7 @@ def test_e2e_backup_then_restore_verify_size_and_artifacts_survive(tmp_path: Pat
 
     # Backup (plan + execute) into an isolated data_root.
     run_backup(
-        profile_name="e2e",
+        profile_name="end_to_end",
         source=source_root,
         dry_run=False,
         data_root=data_root,
@@ -136,7 +140,7 @@ def test_e2e_backup_then_restore_verify_size_and_artifacts_survive(tmp_path: Pat
     )
 
 
-def test_e2e_backup_compress_zip_then_restore_from_archive(tmp_path: Path) -> None:
+def test_end_to_end_backup_compress_zip_then_restore_from_archive(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     data_root = tmp_path / "data_root"
     restore_destination = tmp_path / "restore_destination"
@@ -151,7 +155,7 @@ def test_e2e_backup_compress_zip_then_restore_from_archive(tmp_path: Path) -> No
 
     # Backup (execute + compress). We use zip for deterministic tests without optional deps.
     run_backup(
-        profile_name="e2e",
+        profile_name="end_to_end",
         source=source_root,
         dry_run=False,
         data_root=data_root,
@@ -171,10 +175,19 @@ def test_e2e_backup_compress_zip_then_restore_from_archive(tmp_path: Path) -> No
     )
 
     archive_path = _find_single_backup_archive(data_root)
+    assert archive_path.exists()
 
-    # Restore accepts a compressed artifact path (directory remains canonical truth; archive is derived).
+    manifest_path = _find_single_backup_manifest(data_root)
+
+    # Restore accepts a manifest.json path; when manifest includes archive metadata,
+    # restore stages from that derived archive.
+    payload = manifest_path.read_text(encoding="utf-8")
+    assert '"archive"' in payload, (
+        "Expected run manifest to include archive metadata after compression."
+    )
+
     run_restore(
-        manifest_path=archive_path,
+        manifest_path=manifest_path,
         destination_root=restore_destination,
         mode="overwrite",
         verify="size",

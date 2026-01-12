@@ -14,14 +14,14 @@ Note: Reformatted using PyCharm Markdown table formatter.
 |:-----------------------------------------------------------------|--------:|---------:|--------:|
 | .\gui\tabs\authoring_tab.py                                      |     131 |       65 |     486 |
 | .\gui\tabs\restore_tab.py                                        |     106 |       39 |     402 |
-| .\backup_engine\verify.py                                        |      98 |      165 |     372 |
-| .\backup_engine\restore\service.py                               |      85 |      158 |     360 |
-| .\backup_engine\backup\service.py                                |      63 |      114 |     293 |
+| .\backup_engine\restore\service.py                               |      87 |      159 |     385 |
+| .\backup_engine\verify.py                                        |      98 |      165 |     376 |
+| .\backup_engine\backup\service.py                                |      64 |      114 |     311 |
+| .\backup_engine\manifest_store.py                                |     105 |      240 |     306 |
 | .\gui\tabs\run_tab.py                                            |      70 |       43 |     275 |
 | .\backup_engine\restore\verify.py                                |      68 |      116 |     252 |
 | .\wcbt\cli.py                                                    |      45 |       37 |     237 |
 | .\backup_engine\data_models.py                                   |      88 |      119 |     232 |
-| .\backup_engine\manifest_store.py                                |      87 |      197 |     223 |
 | .\backup_engine\restore\stage.py                                 |      61 |      100 |     187 |
 | .\gui\dialogs\rule_editor_dialog.py                              |      55 |       68 |     186 |
 | .\backup_engine\profile_lock.py                                  |      66 |      114 |     185 |
@@ -29,7 +29,7 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\backup_engine\profile_store\sqlite_store.py                    |      54 |      104 |     173 |
 | .\backup_engine\backup\execute.py                                |      54 |      143 |     155 |
 | .\README.md                                                      |      72 |        0 |     154 |
-| .\tests\test_end_to_end_backup_restore.py                        |      38 |       16 |     138 |
+| .\tests\test_end_to_end_backup_restore.py                        |      40 |       17 |     148 |
 | .\tests\audit_docstrings.py                                      |      57 |       87 |     128 |
 | .\tools\audit_docstrings.py                                      |      57 |       86 |     127 |
 | .\tests\test_profile_lock.py                                     |      31 |        0 |     126 |
@@ -43,7 +43,7 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\backup_engine\backup\plan.py                                   |      60 |      143 |     100 |
 | .\tests\test_cli_exit_codes.py                                   |      28 |        1 |      96 |
 | .\backup_engine\backup\scan.py                                   |      38 |       70 |      95 |
-| .\backup_engine\compression.py                                   |      36 |       59 |      85 |
+| .\backup_engine\compression.py                                   |      40 |       72 |      95 |
 | .\tests\test_copy_execution.py                                   |      27 |        0 |      84 |
 | .\tests\test_restore_conflicts.py                                |      16 |        1 |      83 |
 | .\tests\test_restore_verify_stage.py                             |      22 |        1 |      81 |
@@ -114,4 +114,4 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\gui\adapters\__init__.py                                       |       2 |        9 |       0 |
 | .\gui\tabs\__init__.py                                           |       0 |        1 |       0 |
 | --------                                                         | ------- | -------- | ------- |
-| SUM:                                                             |    2773 |     3473 |    8264 |
+| SUM:                                                             |    2800 |     3531 |    8414 |

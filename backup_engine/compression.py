@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tarfile
 import zipfile
 from dataclasses import dataclass
@@ -96,6 +97,32 @@ def compress_run_directory(
         return CompressionResult(format=CompressionFormat.TAR_ZST, archive_path=output_path)
 
     raise ValueError(f"Unsupported compression format: {format!r}")
+
+
+def compute_file_sha256_hex(file_path: Path, *, chunk_size: int = 1024 * 1024) -> str:
+    """
+    Compute SHA-256 hex digest for a file on disk.
+
+    Parameters
+    ----------
+    file_path:
+        Path to the file to hash.
+    chunk_size:
+        Chunk size in bytes for streaming reads.
+
+    Returns
+    -------
+    str
+        Lowercase hex SHA-256 digest.
+    """
+    h = hashlib.sha256()
+    with file_path.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def extract_archive(

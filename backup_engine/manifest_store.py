@@ -111,6 +111,78 @@ class BackupRunExecutionV1:
 
 
 @dataclass(frozen=True, slots=True)
+class BackupRunArchiveV1:
+    """
+    Archive metadata for a derived compressed artifact.
+
+    Attributes
+    ----------
+    format:
+        Archive format string (e.g., 'tar.zst' or 'zip').
+    relative_path:
+        Path to the archive relative to the directory containing manifest.json.
+    size_bytes:
+        Size of the archive file in bytes.
+    sha256:
+        SHA-256 hex digest for the archive file.
+    """
+
+    format: str
+    relative_path: str
+    size_bytes: int
+    sha256: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "format": self.format,
+            "relative_path": self.relative_path,
+            "size_bytes": self.size_bytes,
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> BackupRunArchiveV1:
+        """
+        Parse archive metadata from a JSON payload.
+
+        Parameters
+        ----------
+        payload:
+            Mapping containing archive metadata.
+
+        Returns
+        -------
+        BackupRunArchiveV1
+            Parsed archive metadata.
+
+        Raises
+        ------
+        ValueError
+            If required fields are missing or invalid.
+        """
+        fmt = payload.get("format")
+        rel = payload.get("relative_path")
+        size_bytes = payload.get("size_bytes")
+        sha256 = payload.get("sha256")
+
+        if not isinstance(fmt, str) or not fmt.strip():
+            raise ValueError("archive.format must be a non-empty string")
+        if not isinstance(rel, str) or not rel.strip():
+            raise ValueError("archive.relative_path must be a non-empty string")
+        if not isinstance(size_bytes, int) or size_bytes < 0:
+            raise ValueError("archive.size_bytes must be a non-negative int")
+        if not isinstance(sha256, str) or not sha256.strip():
+            raise ValueError("archive.sha256 must be a non-empty string")
+
+        return cls(
+            format=fmt,
+            relative_path=rel,
+            size_bytes=size_bytes,
+            sha256=sha256,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class BackupRunManifestV2:
     """
     Canonical manifest for a single backup run (schema v2).
@@ -131,6 +203,7 @@ class BackupRunManifestV2:
     operations: list[Mapping[str, Any]] = field(default_factory=list)
     scan_issues: list[Mapping[str, Any]] = field(default_factory=list)
     execution: BackupRunExecutionV1 | None = None
+    archive: BackupRunArchiveV1 | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the manifest to a JSON-serializable dictionary."""
@@ -147,7 +220,78 @@ class BackupRunManifestV2:
         }
         if self.execution is not None:
             payload["execution"] = self.execution.to_dict()
+        if self.archive is not None:
+            payload["archive"] = self.archive.to_dict()
         return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> BackupRunManifestV2:
+        """
+        Parse a BackupRunManifestV2 from a JSON payload.
+
+        Parameters
+        ----------
+        payload:
+            Mapping parsed from manifest.json.
+
+        Returns
+        -------
+        BackupRunManifestV2
+            Parsed manifest.
+
+        Raises
+        ------
+        ValueError
+            If required fields are missing or invalid.
+        """
+        schema_version = payload.get("schema_version")
+        if schema_version != cls.SCHEMA_VERSION:
+            raise ValueError(f"Unexpected schema_version: {schema_version!r}")
+
+        execution_payload = payload.get("execution")
+        execution: BackupRunExecutionV1 | None = None
+        if isinstance(execution_payload, Mapping):
+            status = execution_payload.get("status")
+            results_payload = execution_payload.get("results")
+            if not isinstance(status, str):
+                raise ValueError("execution.status must be a string")
+            if not isinstance(results_payload, list):
+                raise ValueError("execution.results must be a list")
+            results: list[RunOperationResultV1] = []
+            for item in results_payload:
+                if not isinstance(item, Mapping):
+                    raise ValueError("execution.results items must be objects")
+                results.append(
+                    RunOperationResultV1(
+                        operation_index=int(item["operation_index"]),
+                        operation_type=str(item["operation_type"]),
+                        relative_path=str(item["relative_path"]),
+                        source_path=str(item["source_path"]),
+                        destination_path=str(item["destination_path"]),
+                        outcome=str(item["outcome"]),
+                        message=str(item["message"]),
+                    )
+                )
+            execution = BackupRunExecutionV1(status=status, results=results)
+
+        archive_payload = payload.get("archive")
+        archive: BackupRunArchiveV1 | None = None
+        if isinstance(archive_payload, Mapping):
+            archive = BackupRunArchiveV1.from_dict(archive_payload)
+
+        return cls(
+            schema_version=str(payload["schema_version"]),
+            run_id=str(payload["run_id"]),
+            created_at_utc=str(payload["created_at_utc"]),
+            archive_root=str(payload["archive_root"]),
+            plan_text_path=str(payload["plan_text_path"]),
+            profile_name=str(payload["profile_name"]),
+            source_root=str(payload["source_root"]),
+            operations=list(payload.get("operations", [])),
+            scan_issues=list(payload.get("scan_issues", [])),
+            execution=execution,
+            archive=archive,
+        )
 
 
 def read_manifest_json(manifest_path: Path) -> dict[str, Any]:

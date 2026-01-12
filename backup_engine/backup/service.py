@@ -23,6 +23,7 @@ Safety posture (v1)
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import timezone
 from pathlib import Path
@@ -39,8 +40,12 @@ from backup_engine.backup.scan import (
     scan_source_tree,
 )
 from backup_engine.clock import Clock, SystemClock
+from backup_engine.compression import (
+    compute_file_sha256_hex,
+)
 from backup_engine.errors import BackupExecutionError, WcbtError
 from backup_engine.manifest_store import (
+    BackupRunArchiveV1,
     BackupRunExecutionV1,
     BackupRunManifestV2,
     RunOperationResultV1,
@@ -268,6 +273,7 @@ def run_backup(
 
         compressed_path: Path | None = None
         compression_used = compression
+        archive_meta: BackupRunArchiveV1 | None = None
 
         if compress or (compression_used != "none"):
             from backup_engine.compression import CompressionFormat, compress_run_directory
@@ -308,11 +314,22 @@ def run_backup(
                 compressed_path = None
 
             if compressed_path is not None:
+                rel = os.path.relpath(compressed_path, start=materialized.manifest_path.parent)
+                sha256 = compute_file_sha256_hex(compressed_path)
+                size_bytes = compressed_path.stat().st_size
+
+                archive_meta = BackupRunArchiveV1(
+                    format=str(fmt.value),
+                    relative_path=str(rel).replace("\\", "/"),
+                    size_bytes=int(size_bytes),
+                    sha256=str(sha256),
+                )
                 print(f"  Compressed    : {compressed_path}")
 
         updated_manifest = _build_executed_run_manifest(
             base_manifest=materialized.manifest,
             execution_summary=summary,
+            archive=archive_meta,
         )
 
         write_run_manifest_atomic(materialized.manifest_path, updated_manifest)
@@ -346,6 +363,7 @@ def _build_executed_run_manifest(
     *,
     base_manifest: BackupRunManifestV2,
     execution_summary: BackupExecutionSummary,
+    archive: BackupRunArchiveV1 | None,
 ) -> BackupRunManifestV2:
     """
     Create a new run manifest including execution results.
@@ -389,6 +407,7 @@ def _build_executed_run_manifest(
         operations=list(base_manifest.operations),
         scan_issues=list(base_manifest.scan_issues),
         execution=execution,
+        archive=archive,
     )
 
 
