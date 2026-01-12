@@ -25,6 +25,7 @@ from PySide6.QtGui import (
     QFont,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -225,6 +226,12 @@ class RestoreTab(QWidget):
         self.details.setFont(_mono())
         right_layout.addWidget(self.details, 2)
 
+        self.restore_resolution = QPlainTextEdit()
+        self.restore_resolution.setReadOnly(True)
+        self.restore_resolution.setFont(_mono())
+        self.restore_resolution.setPlaceholderText("Restore input resolution will appear here.")
+        right_layout.addWidget(self.restore_resolution, 1)
+
         links = QGroupBox("Artifacts")
         links_layout = QHBoxLayout(links)
 
@@ -239,7 +246,7 @@ class RestoreTab(QWidget):
         right_layout.addWidget(links)
 
         restore_box = QGroupBox("Restore")
-        restore_layout = QFormLayout(restore_box)
+        self.restore_layout = QFormLayout(restore_box)
 
         self.dest = QLineEdit()
         self.dest.textChanged.connect(self._on_dest_changed)
@@ -251,23 +258,33 @@ class RestoreTab(QWidget):
         dest_row_layout.setContentsMargins(0, 0, 0, 0)
         dest_row_layout.addWidget(self.dest, 1)
         dest_row_layout.addWidget(btn_browse)
-        restore_layout.addRow("Destination:", dest_row)
+        self.restore_layout.addRow("Destination:", dest_row)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Add-only (safe)", "add-only")
+        self.mode_combo.addItem("Overwrite", "overwrite")
+        self.restore_layout.addRow("Mode:", self.mode_combo)
 
         self.dry_run = QCheckBox("Dry run")
-        self.verify_after = QCheckBox("Verify after restore")
-        self.verify_after.setChecked(True)
+
+        self.verify_combo = QComboBox()
+        self.verify_combo.addItem("None", "none")
+        self.verify_combo.addItem("Size", "size")
+        self.verify_combo.addItem("Hash (sha256)", "sha256")
+        self.verify_combo.setCurrentIndex(1)  # default: Size
 
         opts_row = QWidget()
         opts_layout = QHBoxLayout(opts_row)
         opts_layout.setContentsMargins(0, 0, 0, 0)
         opts_layout.addWidget(self.dry_run)
-        opts_layout.addWidget(self.verify_after)
+        opts_layout.addSpacing(12)
+        opts_layout.addWidget(QLabel("Verify:"))
+        opts_layout.addWidget(self.verify_combo)
         opts_layout.addStretch(1)
-        restore_layout.addRow("Options:", opts_row)
+        self.restore_layout.addRow("Options:", opts_row)
 
-        btn_restore = QPushButton("Restore Selected Run")
-        btn_restore.clicked.connect(self._restore_selected)
-        restore_layout.addRow("", btn_restore)
+        self.btn_restore = QPushButton("Restore Selected Run")
+        self.btn_restore.clicked.connect(self._restore_selected)
+        self.restore_layout.addRow("", self.btn_restore)
 
         right_layout.addWidget(restore_box, 1)
 
@@ -289,6 +306,49 @@ class RestoreTab(QWidget):
         self._thread.start()
 
         self._store.request_list_jobs.emit()
+
+    def _compute_restore_resolution(self, manifest_path: Path) -> list[str]:
+        lines: list[str] = []
+        lines.append("RESTORE INPUT RESOLUTION")
+
+        lines.append("  input: manifest.json")
+
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            lines.append("  status: unreadable manifest")
+            return lines
+
+        archive = payload.get("archive")
+        if not isinstance(archive, dict):
+            lines.append("  archive metadata: absent")
+            lines.append("  restore source: run directory")
+            return lines
+
+        rel = archive.get("relative_path")
+        lines.append("  archive metadata: present")
+
+        if not isinstance(rel, str) or not rel.strip():
+            lines.append("  archive path: invalid")
+            lines.append("  restore source: run directory")
+            return lines
+
+        archive_path = (manifest_path.parent / rel).resolve()
+        lines.append(f"  archive path: {archive_path}")
+
+        if archive_path.exists() and archive_path.is_file():
+            lines.append("  archive exists: yes")
+            lines.append("  restore source: derived archive")
+        else:
+            lines.append("  archive exists: no")
+            lines.append("  restore source: run directory")
+
+        return lines
+
+    def _copy_restore_summary(self) -> None:
+        text = self._build_restore_summary()
+        QApplication.clipboard().setText(text)
+        QMessageBox.information(self, "Restore Summary", "Copied restore summary to clipboard.")
 
     def _selected_job_id(self) -> str:
         return str(self.job_combo.currentData())
@@ -388,6 +448,10 @@ class RestoreTab(QWidget):
         self.history.clear()
         self._selected_manifest_path = None
 
+        if hasattr(self, "btn_restore"):
+            self.btn_restore.setEnabled(False)
+        if hasattr(self, "restore_resolution"):
+            self.restore_resolution.setPlainText("")
         if self.job_combo.count() == 0:
             self.details.setPlainText("No jobs yet. Create one in Authoring.")
             return
@@ -417,6 +481,64 @@ class RestoreTab(QWidget):
             self.history.setCurrentRow(0)
         else:
             self.details.setPlainText("No manifests found (with current filter).")
+
+    def _build_restore_summary(self) -> str:
+        manifest_path = self._selected_manifest_path
+        dest_text = self.dest.text().strip()
+
+        lines: list[str] = []
+        lines.append("WCBT RESTORE SUMMARY")
+
+        if manifest_path is None:
+            lines.append("selected_manifest: (none)")
+            return "\n".join(lines)
+
+        lines.append(f"selected_manifest: {manifest_path}")
+        lines.append(f"destination: {dest_text or '(empty)'}")
+        lines.append(f"mode: {str(self.mode_combo.currentData())}")
+        lines.append(f"verify: {str(self.verify_combo.currentData())}")
+        lines.append(f"dry_run: {str(self.dry_run.isChecked()).lower()}")
+
+        # Reuse existing resolution logic for consistency.
+        lines.append("")
+        lines.extend(self._compute_restore_resolution(manifest_path))
+
+        allowed, reason = self._restore_preflight(manifest_path)
+        lines.append("")
+        lines.append(f"restore_enabled: {str(allowed).lower()}")
+        if reason:
+            lines.append(f"blocked_reason: {reason}")
+
+        return "\n".join(lines)
+
+    def _restore_preflight(self, manifest_path: Path) -> tuple[bool, str | None]:
+        """
+        Determine whether Restore should be enabled for the selected manifest.
+
+        Returns
+        -------
+        tuple[bool, str | None]
+            (is_allowed, reason_if_disabled)
+        """
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False, "Manifest is unreadable."
+
+        archive = payload.get("archive")
+        if not isinstance(archive, dict):
+            return True, None
+
+        rel = archive.get("relative_path")
+        if not isinstance(rel, str) or not rel.strip():
+            # Archive metadata is malformed; safest is to allow restore from run dir.
+            return True, None
+
+        archive_path = (manifest_path.parent / rel).resolve()
+        if not (archive_path.exists() and archive_path.is_file()):
+            return False, f"Derived archive is missing: {archive_path}"
+
+        return True, None
 
     def _on_restore_finished(self, result_obj: object) -> None:
         result: RestoreRunResult = result_obj
@@ -453,12 +575,12 @@ class RestoreTab(QWidget):
             QMessageBox.critical(self, "Restore", "Selected manifest does not exist.")
             return
 
-        mode = "add-only"
-        verify = "size" if self.verify_after.isChecked() else "none"
+        mode = str(self.mode_combo.currentData())
+        verify = str(self.verify_combo.currentData())
         dry_run = self.dry_run.isChecked()
 
         self._last_result = None
-        self.details.setPlainText("Running restore…")
+        self.details.setPlainText(f"Running restore…\n\nmode: {mode}")
         self.setEnabled(False)
 
         self._worker.configure(
@@ -501,6 +623,20 @@ class RestoreTab(QWidget):
                 lines.append(f"  {k}: {v}")
 
         self.details.setPlainText("\n".join(lines))
+
+        resolution_lines = self._compute_restore_resolution(manifest_path)
+        self.restore_resolution.setPlainText("\n".join(resolution_lines))
+
+        allowed, reason = self._restore_preflight(manifest_path)
+        self.btn_copy_summary = QPushButton("Copy Restore Summary")
+        self.btn_copy_summary.clicked.connect(self._copy_restore_summary)
+        self.restore_layout.addRow("", self.btn_copy_summary)
+        self.btn_restore.setEnabled(allowed)
+
+        if not allowed and reason:
+            self.restore_resolution.appendPlainText("")
+            self.restore_resolution.appendPlainText("BLOCKED")
+            self.restore_resolution.appendPlainText(f"  reason: {reason}")
 
     def _pick_dest(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Select restore destination")

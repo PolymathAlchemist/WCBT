@@ -12,8 +12,8 @@ Note: Reformatted using PyCharm Markdown table formatter.
 
 | File                                                             |   blank |  comment |    code |
 |:-----------------------------------------------------------------|--------:|---------:|--------:|
+| .\gui\tabs\restore_tab.py                                        |     134 |       48 |     501 |
 | .\gui\tabs\authoring_tab.py                                      |     131 |       65 |     486 |
-| .\gui\tabs\restore_tab.py                                        |     106 |       39 |     402 |
 | .\backup_engine\restore\service.py                               |      87 |      159 |     385 |
 | .\backup_engine\verify.py                                        |      98 |      165 |     376 |
 | .\backup_engine\backup\service.py                                |      64 |      114 |     311 |
@@ -114,4 +114,4 @@ Note: Reformatted using PyCharm Markdown table formatter.
 | .\gui\adapters\__init__.py                                       |       2 |        9 |       0 |
 | .\gui\tabs\__init__.py                                           |       0 |        1 |       0 |
 | --------                                                         | ------- | -------- | ------- |
-| SUM:                                                             |    2800 |     3531 |    8414 |
+| SUM:                                                             |    2828 |     3540 |    8513 |
