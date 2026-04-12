@@ -23,9 +23,10 @@
 ## Docstrings
 
 - Use NumPy-style docstrings for all new public functions, methods, classes, and any non-trivial private helpers.
-- Keep docstrings accurate and concrete.
-- Describe parameters, returns, raises, and important notes when relevant.
-- Do not add docstrings to trivial one-line helpers unless they improve clarity.
+- Allowed sections include `Parameters`, `Returns`, `Raises`, and `Notes` when relevant.
+- `Notes` may be used to explain why code exists, a non-obvious design choice, a compatibility constraint, or why a certain handling path is necessary.
+- Keep section body indentation consistent with standard NumPy style.
+- Do not add `Notes` unless it provides meaningful "why" context.
 
 Example format:
 
