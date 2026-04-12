@@ -30,6 +30,7 @@
 Example format:
 
 def example_function(path: str, overwrite: bool = False) -> str:
+
     """
     Brief summary.
 
@@ -49,6 +50,11 @@ def example_function(path: str, overwrite: bool = False) -> str:
     ------
     ValueError
         Raised when the path is invalid.
+    
+    Notes
+    -----
+    Optional information explaining why the code exists
+    or why it is handled a certain way.
     """
 
 ## Comments
