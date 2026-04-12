@@ -76,10 +76,11 @@ class BackupWorker(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._job_id: str | None = None
+        self._job_name: str | None = None
         self._source: Path | None = None
         self._mode: str = "plan"
 
-    def configure(self, job_id: str, source: Path, mode: str) -> None:
+    def configure(self, job_id: str, job_name: str, source: Path, mode: str) -> None:
         """
         Configure parameters for the next backup execution.
 
@@ -88,6 +89,7 @@ class BackupWorker(QObject):
         This method performs no I/O. It stores parameters for the next `run()` call.
         """
         self._job_id = job_id
+        self._job_name = job_name
         self._source = source
         self._mode = mode
 
@@ -109,6 +111,8 @@ class BackupWorker(QObject):
                     dry_run=True,
                     data_root=None,
                     write_plan=True,
+                    job_id=self._job_id,
+                    job_name=self._job_name,
                 )
             elif mode == "materialize":
                 result = run_backup(
@@ -117,6 +121,8 @@ class BackupWorker(QObject):
                     dry_run=False,
                     data_root=None,
                     execute=False,
+                    job_id=self._job_id,
+                    job_name=self._job_name,
                 )
             elif mode == "execute":
                 result = run_backup(
@@ -125,6 +131,8 @@ class BackupWorker(QObject):
                     dry_run=False,
                     data_root=None,
                     execute=True,
+                    job_id=self._job_id,
+                    job_name=self._job_name,
                 )
             elif mode == "execute+compress":
                 result = run_backup(
@@ -135,6 +143,8 @@ class BackupWorker(QObject):
                     execute=True,
                     compress=True,
                     compression="zip",
+                    job_id=self._job_id,
+                    job_name=self._job_name,
                 )
             else:
                 raise ValueError(f"Unknown run mode: {mode!r}")
@@ -308,7 +318,7 @@ class RunTab(QWidget):
         self.status_label.setText(f"{action}: {self.job_combo.currentText()} …")
         self.summary.setPlainText(f"{action} backup…")
 
-        self._worker.configure(job_id, source, mode)
+        self._worker.configure(job_id, self.job_combo.currentText(), source, mode)
         QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
 
     def _open_artifacts(self) -> None:

@@ -200,6 +200,8 @@ class BackupRunManifestV2:
     plan_text_path: str
     profile_name: str
     source_root: str
+    job_id: str | None = None
+    job_name: str | None = None
     operations: list[Mapping[str, Any]] = field(default_factory=list)
     scan_issues: list[Mapping[str, Any]] = field(default_factory=list)
     execution: BackupRunExecutionV1 | None = None
@@ -218,6 +220,10 @@ class BackupRunManifestV2:
             "operations": list(self.operations),
             "scan_issues": list(self.scan_issues),
         }
+        if self.job_id is not None:
+            payload["job_id"] = self.job_id
+        if self.job_name is not None:
+            payload["job_name"] = self.job_name
         if self.execution is not None:
             payload["execution"] = self.execution.to_dict()
         if self.archive is not None:
@@ -287,6 +293,8 @@ class BackupRunManifestV2:
             plan_text_path=str(payload["plan_text_path"]),
             profile_name=str(payload["profile_name"]),
             source_root=str(payload["source_root"]),
+            job_id=str(payload["job_id"]) if payload.get("job_id") is not None else None,
+            job_name=str(payload["job_name"]) if payload.get("job_name") is not None else None,
             operations=list(payload.get("operations", [])),
             scan_issues=list(payload.get("scan_issues", [])),
             execution=execution,
@@ -561,6 +569,8 @@ class BackupRunSummary:
     archive_root: str | None
     profile_name: str | None
     source_root: str | None
+    job_id: str | None
+    job_name: str | None
 
 
 def list_backup_runs(
@@ -645,6 +655,8 @@ def list_backup_runs(
                 archive_root=_opt_str("archive_root"),
                 profile_name=_opt_str("profile_name"),
                 source_root=_opt_str("source_root"),
+                job_id=_opt_str("job_id"),
+                job_name=_opt_str("job_name"),
             )
         )
 

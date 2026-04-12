@@ -95,6 +95,8 @@ def run_backup(
     source: Path,
     dry_run: bool,
     data_root: Path | None,
+    job_id: str | None = None,
+    job_name: str | None = None,
     excluded_directory_names: Iterable[str] | None = None,
     excluded_file_names: Iterable[str] | None = None,
     use_default_excludes: bool = True,
@@ -244,6 +246,8 @@ def run_backup(
             profile_name=profile_name,
             source_root=source_root,
             clock=run_clock,
+            job_id=job_id,
+            job_name=job_name,
         )
 
         print()
@@ -404,6 +408,8 @@ def _build_executed_run_manifest(
         plan_text_path=base_manifest.plan_text_path,
         profile_name=base_manifest.profile_name,
         source_root=base_manifest.source_root,
+        job_id=base_manifest.job_id,
+        job_name=base_manifest.job_name,
         operations=list(base_manifest.operations),
         scan_issues=list(base_manifest.scan_issues),
         execution=execution,

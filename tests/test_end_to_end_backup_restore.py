@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -203,3 +204,40 @@ def test_end_to_end_backup_compress_zip_then_restore_from_archive(tmp_path: Path
     assert artifacts_root.is_dir(), (
         "Expected restore artifacts root to be a directory after promotion."
     )
+
+
+def test_backup_manifest_persists_gui_job_identity(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    data_root = tmp_path / "data_root"
+
+    files = [
+        _FileSpec(relative_path=Path("alpha.txt"), content=b"alpha\n"),
+    ]
+
+    _write_source_tree(source_root, files)
+
+    run_backup(
+        profile_name="end_to_end",
+        source=source_root,
+        dry_run=False,
+        data_root=data_root,
+        excluded_directory_names=None,
+        excluded_file_names=None,
+        use_default_excludes=True,
+        max_items=100,
+        write_plan=False,
+        plan_path=None,
+        overwrite_plan=False,
+        clock=None,
+        execute=True,
+        force=True,
+        break_lock=True,
+        job_id="job-a-id",
+        job_name="Job A",
+    )
+
+    manifest_path = _find_single_backup_manifest(data_root)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert payload["job_id"] == "job-a-id"
+    assert payload["job_name"] == "Job A"

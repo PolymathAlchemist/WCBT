@@ -58,6 +58,8 @@ def materialize_backup_run(
     profile_name: str,
     source_root: Path,
     clock: Clock,
+    job_id: str | None,
+    job_name: str | None,
 ) -> MaterializedBackupRun:
     """
     Create the run directory and write plan + manifest artifacts.
@@ -79,6 +81,8 @@ def materialize_backup_run(
             plan_text_path=str(plan_text_path),
             profile_name=profile_name,
             source_root=str(source_root),
+            job_id=job_id,
+            job_name=job_name,
             operations=list(operations_payload),
             scan_issues=list(scan_issues_payload),
             execution=None,

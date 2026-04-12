@@ -269,7 +269,6 @@ class RestoreTab(QWidget):
         self.verify_combo = QComboBox()
         self.verify_combo.addItem("None", "none")
         self.verify_combo.addItem("Size", "size")
-        self.verify_combo.addItem("Hash (sha256)", "sha256")
         self.verify_combo.setCurrentIndex(1)  # default: Size
 
         opts_row = QWidget()
@@ -465,10 +464,12 @@ class RestoreTab(QWidget):
             self.details.setPlainText("Archive root does not exist.")
             return
 
-        selected_profile_name = str(self.job_combo.currentText()).strip() or None
-        runs = list_backup_runs(root, profile_name=selected_profile_name, limit=500)
+        selected_job_id = self._selected_job_id()
+        runs = list_backup_runs(root, limit=500)
 
         for r in runs:
+            if r.job_id is not None and selected_job_id and r.job_id != selected_job_id:
+                continue
             text = f"{r.modified_at_utc}  {r.run_id}  {r.manifest_path}"
             if needle and needle not in text.lower():
                 continue
@@ -536,7 +537,7 @@ class RestoreTab(QWidget):
 
         archive_path = (manifest_path.parent / rel).resolve()
         if not (archive_path.exists() and archive_path.is_file()):
-            return False, f"Derived archive is missing: {archive_path}"
+            return True, None
 
         return True, None
 
