@@ -34,7 +34,10 @@ cloc-by-file.txt
 
 # ---- Coverage / reports ----
 .coverage
+.coverage_*
+coverage.xml
 htmlcov/
+.pytest_cache/
 
 # ---- Misc ----
 .DS_Store
