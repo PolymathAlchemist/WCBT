@@ -32,3 +32,19 @@ class BackupExecutionError(BackupError):
 
 class BackupInvariantViolationError(BackupExecutionError):
     """Raised when an execution-time invariant is violated."""
+
+
+class SchedulingError(WcbtError):
+    """Base exception for Windows scheduling failures."""
+
+
+class InvalidScheduleError(SchedulingError):
+    """Raised when a requested schedule is invalid or unsupported."""
+
+
+class ScheduledTaskNotFoundError(SchedulingError):
+    """Raised when a requested Windows scheduled task is not present."""
+
+
+class SchedulingBackendError(SchedulingError):
+    """Raised when the schtasks backend reports an unexpected failure."""

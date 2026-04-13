@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Sequence
 
+from backup_engine.scheduling.models import BackupScheduleSpec, normalize_schedule_spec
+
 from ..paths_and_safety import ProfilePaths, ensure_profile_directories, resolve_profile_paths
 from .api import JobId, JobSummary, ProfileStore, RuleSet
 from .errors import InvalidRuleError, UnknownJobError
@@ -303,6 +305,105 @@ class SqliteProfileStore(ProfileStore):
                     "INSERT INTO rules(job_id, kind, pattern, position) VALUES(?, 'exclude', ?, ?)",
                     (job_id, pat, idx),
                 )
+
+    def load_backup_schedule(self, job_id: JobId) -> BackupScheduleSpec:
+        """
+        Load the persisted backup schedule for a job.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job to load.
+
+        Returns
+        -------
+        BackupScheduleSpec
+            Persisted schedule definition.
+
+        Raises
+        ------
+        UnknownJobError
+            If the job or schedule is not present.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT js.job_id, js.source_root, js.cadence, js.start_time_local, "
+                "js.weekdays, js.compression "
+                "FROM job_schedules js "
+                "JOIN jobs j ON j.job_id = js.job_id "
+                "WHERE js.job_id = ? AND j.is_deleted = 0",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise UnknownJobError(f"No backup schedule found for job_id: {job_id}")
+
+        weekdays_raw = str(row["weekdays"]) if row["weekdays"] is not None else ""
+        weekdays = tuple(part for part in weekdays_raw.split(",") if part)
+        return normalize_schedule_spec(
+            BackupScheduleSpec(
+                job_id=str(row["job_id"]),
+                source_root=str(row["source_root"]),
+                cadence=str(row["cadence"]),
+                start_time_local=str(row["start_time_local"]),
+                weekdays=weekdays,
+                compression=str(row["compression"]),
+            )
+        )
+
+    def save_backup_schedule(self, schedule: BackupScheduleSpec) -> None:
+        """
+        Persist the backup schedule for an existing job.
+
+        Parameters
+        ----------
+        schedule:
+            Schedule definition to persist.
+
+        Raises
+        ------
+        UnknownJobError
+            If the target job does not exist.
+        """
+        normalized = normalize_schedule_spec(schedule)
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            job = conn.execute(
+                "SELECT job_id FROM jobs WHERE job_id = ? AND is_deleted = 0",
+                (normalized.job_id,),
+            ).fetchone()
+            if job is None:
+                raise UnknownJobError(f"Unknown job_id: {normalized.job_id}")
+
+            conn.execute(
+                "INSERT INTO job_schedules(job_id, source_root, cadence, start_time_local, weekdays, compression) "
+                "VALUES(?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(job_id) DO UPDATE SET "
+                "source_root = excluded.source_root, "
+                "cadence = excluded.cadence, "
+                "start_time_local = excluded.start_time_local, "
+                "weekdays = excluded.weekdays, "
+                "compression = excluded.compression",
+                (
+                    normalized.job_id,
+                    normalized.source_root,
+                    normalized.cadence,
+                    normalized.start_time_local,
+                    ",".join(normalized.weekdays) if normalized.weekdays else None,
+                    normalized.compression,
+                ),
+            )
+
+    def delete_backup_schedule(self, job_id: JobId) -> None:
+        """
+        Delete the persisted backup schedule for a job.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job whose schedule should be removed.
+        """
+        with self._connect() as conn:
+            conn.execute("DELETE FROM job_schedules WHERE job_id = ?", (job_id,))
 
 
 def open_profile_store(profile_name: str, data_root: Path | None = None) -> SqliteProfileStore:

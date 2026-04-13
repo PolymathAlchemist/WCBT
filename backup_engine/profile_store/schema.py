@@ -32,4 +32,14 @@ CREATE TABLE IF NOT EXISTS rules (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rules_job_kind ON rules(job_id, kind);
+
+CREATE TABLE IF NOT EXISTS job_schedules (
+    job_id            TEXT PRIMARY KEY,
+    source_root       TEXT NOT NULL,
+    cadence           TEXT NOT NULL CHECK(cadence IN ('daily','weekly')),
+    start_time_local  TEXT NOT NULL,
+    weekdays          TEXT NULL,
+    compression       TEXT NOT NULL DEFAULT 'none',
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+);
 """

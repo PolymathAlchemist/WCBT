@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from backup_engine.scheduling.models import BackupScheduleSpec
+
 JobId = str
 
 
@@ -162,5 +164,55 @@ class ProfileStore(Protocol):
         ------
         InvalidRuleError
             If any pattern violates invariants.
+        """
+        raise NotImplementedError
+
+    def load_backup_schedule(self, job_id: JobId) -> BackupScheduleSpec:
+        """
+        Load the persisted backup schedule for a job.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job to load.
+
+        Returns
+        -------
+        BackupScheduleSpec
+            Persisted schedule definition.
+
+        Raises
+        ------
+        UnknownJobError
+            If the job or schedule is not present.
+        """
+        raise NotImplementedError
+
+    def save_backup_schedule(self, schedule: BackupScheduleSpec) -> None:
+        """
+        Persist the backup schedule for a job.
+
+        Parameters
+        ----------
+        schedule:
+            Schedule definition to persist.
+
+        Raises
+        ------
+        UnknownJobError
+            If the target job does not exist.
+        InvalidScheduleError
+            If the schedule violates scheduler invariants.
+        """
+        raise NotImplementedError
+
+    def delete_backup_schedule(self, job_id: JobId) -> None:
+        """
+        Delete the persisted backup schedule for a job.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job whose schedule should be removed.
         """
         raise NotImplementedError

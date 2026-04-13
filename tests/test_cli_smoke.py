@@ -26,7 +26,9 @@ def test_cli_root_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert "wcbt" in captured.out.lower()
 
 
-@pytest.mark.parametrize("subcommand", ["init-profile", "backup", "verify", "restore"])
+@pytest.mark.parametrize(
+    "subcommand", ["init-profile", "backup", "verify", "restore", "schedule", "scheduled-backup"]
+)
 def test_cli_subcommand_help(subcommand: str, capsys: pytest.CaptureFixture[str]) -> None:
     _run_help([subcommand, "--help"])
     captured = capsys.readouterr()

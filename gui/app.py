@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QTabWidget, QVB
 from gui.tabs.authoring_tab import AuthoringTab
 from gui.tabs.restore_tab import RestoreTab
 from gui.tabs.run_tab import RunTab
+from gui.tabs.scheduling_tab import SchedulingTab
 from gui.tabs.settings_tab import SettingsTab
 
 
@@ -67,6 +68,10 @@ class AppWindow(QWidget):
 
         self.authoring_tab = AuthoringTab()
         tabs.addTab(self.authoring_tab, "Authoring")
+
+        self.scheduling_tab = SchedulingTab()
+        tabs.addTab(self.scheduling_tab, "Scheduling")
+
         self.settings_tab = SettingsTab()
         tabs.addTab(self.settings_tab, "Settings")
 
@@ -90,6 +95,9 @@ class AppWindow(QWidget):
 
             if hasattr(self, "authoring_tab"):
                 self.authoring_tab.shutdown()
+
+            if hasattr(self, "scheduling_tab"):
+                self.scheduling_tab.shutdown()
 
             if hasattr(self, "settings_tab"):
                 # Settings tab has no worker threads today, but keep symmetry.
