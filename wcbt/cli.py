@@ -228,7 +228,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     create_schedule_p.add_argument("--profile", required=True, help="Profile name.")
     create_schedule_p.add_argument("--job-id", required=True, help="Stable job identifier.")
-    create_schedule_p.add_argument("--source", required=True, type=Path, help="Source directory.")
+    create_schedule_p.add_argument(
+        "--source",
+        required=True,
+        type=Path,
+        help="Legacy scheduled-run compatibility input for the current execution path.",
+    )
     create_schedule_p.add_argument(
         "--data-root",
         default=None,
@@ -238,7 +243,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--compression",
         choices=["tar.zst", "zip", "none"],
         default="none",
-        help="Compression format for scheduled execute-mode backups (default: none).",
+        help=(
+            "Legacy scheduled-run compatibility input for the current execution path "
+            "(default: none)."
+        ),
     )
     cadence = create_schedule_p.add_mutually_exclusive_group(required=True)
     cadence.add_argument("--daily", action="store_true", help="Run once per day.")

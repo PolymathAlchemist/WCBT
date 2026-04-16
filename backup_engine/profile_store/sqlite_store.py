@@ -308,7 +308,7 @@ class SqliteProfileStore(ProfileStore):
 
     def load_backup_schedule(self, job_id: JobId) -> BackupScheduleSpec:
         """
-        Load the persisted backup schedule for a job.
+        Load the persisted scheduled-task record for a job.
 
         Parameters
         ----------
@@ -318,7 +318,9 @@ class SqliteProfileStore(ProfileStore):
         Returns
         -------
         BackupScheduleSpec
-            Persisted schedule definition.
+            Persisted scheduled-task record with trigger metadata plus any
+            transitional compatibility payload still required by the current
+            scheduled execution path.
 
         Raises
         ------
@@ -352,12 +354,14 @@ class SqliteProfileStore(ProfileStore):
 
     def save_backup_schedule(self, schedule: BackupScheduleSpec) -> None:
         """
-        Persist the backup schedule for an existing job.
+        Persist the scheduled-task record for an existing job.
 
         Parameters
         ----------
         schedule:
-            Schedule definition to persist.
+            Scheduled-task record to persist. The scheduling boundary owns the
+            trigger metadata only; any backup-definition payload remains
+            compatibility state until later refactor steps remove it.
 
         Raises
         ------

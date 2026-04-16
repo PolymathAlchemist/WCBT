@@ -1,4 +1,11 @@
-"""Typed models for WCBT Windows scheduling."""
+"""Typed models for WCBT Windows scheduling.
+
+Notes
+-----
+Scheduling is a trigger-only concern in the WCBT domain model.
+Any backup-definition data still attached to scheduled execution is transitional
+compatibility state, not scheduler-owned meaning.
+"""
 
 from __future__ import annotations
 
@@ -13,16 +20,14 @@ _WEEKDAY_INDEX: dict[str, int] = {day: idx for idx, day in enumerate(_WEEKDAY_OR
 
 
 @dataclass(frozen=True, slots=True)
-class BackupScheduleSpec:
+class ScheduledTaskTriggerSpec:
     """
-    Minimal persisted schedule definition for a backup job.
+    Trigger-only metadata for a scheduled WCBT job invocation.
 
     Attributes
     ----------
     job_id:
-        Stable WCBT job identifier.
-    source_root:
-        Source directory that scheduled runs back up.
+        Stable WCBT job identifier to invoke.
     cadence:
         Supported cadence kind. v1 supports only ``daily`` and ``weekly``.
     start_time_local:
@@ -30,16 +35,157 @@ class BackupScheduleSpec:
     weekdays:
         Weekly day set using Task Scheduler day tokens such as ``MON``.
         Empty for daily schedules.
-    compression:
-        Compression behavior for scheduled execute-mode backups.
     """
 
     job_id: str
-    source_root: str
     cadence: str
     start_time_local: str
     weekdays: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledBackupLegacyDefinition:
+    """
+    Transitional scheduled-backup inputs carried for compatibility only.
+
+    Notes
+    -----
+    These fields are not owned by the scheduling boundary. They exist only
+    because the current scheduled execution path still reads backup-definition
+    inputs from persisted schedule state until later boundary corrections remove
+    that dependency.
+    """
+
+    source_root: str
     compression: str
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class BackupScheduleSpec:
+    """
+    Persisted scheduled-task record for a backup job.
+
+    Attributes
+    ----------
+    trigger:
+        Trigger-only scheduling metadata.
+    legacy_definition:
+        Transitional compatibility payload for the current scheduled execution
+        path. This is not scheduler-owned meaning.
+
+    Notes
+    -----
+    This type intentionally separates trigger metadata from any compatibility
+    backup-definition inputs so scheduling cannot be modeled as the owner of
+    backup content semantics.
+    """
+
+    trigger: ScheduledTaskTriggerSpec
+    legacy_definition: ScheduledBackupLegacyDefinition | None
+
+    def __init__(
+        self,
+        *,
+        job_id: str,
+        source_root: str,
+        cadence: str,
+        start_time_local: str,
+        weekdays: tuple[str, ...],
+        compression: str,
+    ) -> None:
+        object.__setattr__(
+            self,
+            "trigger",
+            ScheduledTaskTriggerSpec(
+                job_id=job_id,
+                cadence=cadence,
+                start_time_local=start_time_local,
+                weekdays=weekdays,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "legacy_definition",
+            ScheduledBackupLegacyDefinition(
+                source_root=source_root,
+                compression=compression,
+            ),
+        )
+
+    @classmethod
+    def from_parts(
+        cls,
+        *,
+        trigger: ScheduledTaskTriggerSpec,
+        legacy_definition: ScheduledBackupLegacyDefinition | None,
+    ) -> "BackupScheduleSpec":
+        """
+        Build a schedule record from explicitly separated parts.
+
+        Parameters
+        ----------
+        trigger:
+            Trigger-only scheduling metadata.
+        legacy_definition:
+            Transitional compatibility payload for scheduled execution.
+
+        Returns
+        -------
+        BackupScheduleSpec
+            Persisted scheduled-task record with separated ownership.
+        """
+        schedule = cls.__new__(cls)
+        object.__setattr__(schedule, "trigger", trigger)
+        object.__setattr__(schedule, "legacy_definition", legacy_definition)
+        return schedule
+
+    @property
+    def job_id(self) -> str:
+        """Return the job identifier from trigger metadata."""
+        return self.trigger.job_id
+
+    @property
+    def cadence(self) -> str:
+        """Return the scheduled cadence from trigger metadata."""
+        return self.trigger.cadence
+
+    @property
+    def start_time_local(self) -> str:
+        """Return the scheduled local start time from trigger metadata."""
+        return self.trigger.start_time_local
+
+    @property
+    def weekdays(self) -> tuple[str, ...]:
+        """Return the scheduled weekdays from trigger metadata."""
+        return self.trigger.weekdays
+
+    @property
+    def source_root(self) -> str:
+        """
+        Return transitional scheduled execution source input.
+
+        Notes
+        -----
+        This property exists for compatibility with the current scheduled-run
+        path. It does not imply scheduler ownership of backup-definition data.
+        """
+        if self.legacy_definition is None:
+            raise InvalidScheduleError("Scheduled backup source_root is not available.")
+        return self.legacy_definition.source_root
+
+    @property
+    def compression(self) -> str:
+        """
+        Return transitional scheduled execution compression input.
+
+        Notes
+        -----
+        This property exists for compatibility with the current scheduled-run
+        path. It does not imply scheduler ownership of backup-definition data.
+        """
+        if self.legacy_definition is None:
+            raise InvalidScheduleError("Scheduled backup compression is not available.")
+        return self.legacy_definition.compression
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +219,9 @@ class ScheduledBackupStatus:
     Attributes
     ----------
     schedule:
-        Persisted WCBT schedule definition.
+        Persisted scheduled-task record. Trigger metadata is authoritative for
+        this boundary; any attached legacy definition payload is transitional
+        compatibility state only.
     task_name:
         Derived Windows task name for the job.
     task_exists:
@@ -90,17 +238,17 @@ class ScheduledBackupStatus:
 
 def normalize_schedule_spec(spec: BackupScheduleSpec) -> BackupScheduleSpec:
     """
-    Validate and normalize a backup schedule specification.
+    Validate and normalize a persisted scheduled-task record.
 
     Parameters
     ----------
     spec:
-        Candidate schedule definition.
+        Candidate scheduled-task record.
 
     Returns
     -------
     BackupScheduleSpec
-        Normalized schedule definition suitable for persistence and task creation.
+        Normalized scheduled-task record suitable for persistence and task creation.
 
     Raises
     ------
@@ -112,37 +260,46 @@ def normalize_schedule_spec(spec: BackupScheduleSpec) -> BackupScheduleSpec:
     This normalization is intentionally restrictive so the first Task Scheduler
     milestone stays low-risk and maps directly to ``schtasks`` switches.
     """
-    job_id = spec.job_id.strip()
+    trigger = spec.trigger
+    job_id = trigger.job_id.strip()
     if not job_id:
         raise InvalidScheduleError("job_id must not be empty.")
 
-    source_root = spec.source_root.strip()
+    legacy_definition = spec.legacy_definition
+    if legacy_definition is None:
+        raise InvalidScheduleError("legacy scheduled execution inputs must be present.")
+
+    source_root = legacy_definition.source_root.strip()
     if not source_root:
         raise InvalidScheduleError("source_root must not be empty.")
 
-    cadence = spec.cadence.strip().lower()
+    cadence = trigger.cadence.strip().lower()
     if cadence not in {"daily", "weekly"}:
         raise InvalidScheduleError("cadence must be 'daily' or 'weekly'.")
 
-    start_time_local = normalize_start_time_local(spec.start_time_local)
+    start_time_local = normalize_start_time_local(trigger.start_time_local)
 
-    compression = spec.compression.strip().lower()
+    compression = legacy_definition.compression.strip().lower()
     if compression not in {"none", "zip", "tar.zst"}:
         raise InvalidScheduleError("compression must be one of: none, zip, tar.zst.")
 
-    weekdays = normalize_weekdays(spec.weekdays)
+    weekdays = normalize_weekdays(trigger.weekdays)
     if cadence == "daily" and weekdays:
         raise InvalidScheduleError("daily schedules must not specify weekdays.")
     if cadence == "weekly" and not weekdays:
         raise InvalidScheduleError("weekly schedules must specify at least one weekday.")
 
-    return BackupScheduleSpec(
-        job_id=job_id,
-        source_root=source_root,
-        cadence=cadence,
-        start_time_local=start_time_local,
-        weekdays=weekdays,
-        compression=compression,
+    return BackupScheduleSpec.from_parts(
+        trigger=ScheduledTaskTriggerSpec(
+            job_id=job_id,
+            cadence=cadence,
+            start_time_local=start_time_local,
+            weekdays=weekdays,
+        ),
+        legacy_definition=ScheduledBackupLegacyDefinition(
+            source_root=source_root,
+            compression=compression,
+        ),
     )
 
 

@@ -1,4 +1,11 @@
-"""High-level scheduling orchestration for WCBT backup jobs."""
+"""High-level scheduling orchestration for WCBT backup jobs.
+
+Notes
+-----
+Scheduling is a trigger-only support layer. If scheduled execution still
+depends on persisted backup-definition inputs, that dependency is transitional
+compatibility state rather than scheduler-owned meaning.
+"""
 
 from __future__ import annotations
 
@@ -40,7 +47,7 @@ def create_or_update_scheduled_backup(
     python_executable: str | None = None,
 ) -> ScheduledBackupStatus:
     """
-    Persist and register a scheduled backup task for a WCBT job.
+    Persist and register a scheduled backup trigger for a WCBT job.
 
     Parameters
     ----------
@@ -59,6 +66,12 @@ def create_or_update_scheduled_backup(
     -------
     ScheduledBackupStatus
         Combined persisted and Windows scheduler state after creation.
+
+    Notes
+    -----
+    The scheduling boundary owns trigger metadata only. Any backup-definition
+    data attached to the persisted record remains transitional compatibility
+    state for the current scheduled execution path.
     """
     normalized = normalize_schedule_spec(schedule)
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
@@ -94,7 +107,7 @@ def query_scheduled_backup(
     backend: SchtasksBackend | None = None,
 ) -> ScheduledBackupStatus:
     """
-    Load persisted WCBT schedule data and current Windows task presence.
+    Load persisted scheduled-task data and current Windows task presence.
 
     Parameters
     ----------
@@ -110,7 +123,8 @@ def query_scheduled_backup(
     Returns
     -------
     ScheduledBackupStatus
-        Persisted schedule plus current Windows task presence details.
+        Persisted scheduled-task record plus current Windows task presence
+        details.
     """
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
     schedule = store.load_backup_schedule(job_id)
@@ -185,7 +199,7 @@ def load_scheduled_backup_run_request(
     job_id: str,
 ) -> tuple[BackupScheduleSpec, str | None]:
     """
-    Load the persisted schedule and current job name for a scheduled run.
+    Load the persisted scheduled-task record and current job name for a scheduled run.
 
     Parameters
     ----------
@@ -199,7 +213,13 @@ def load_scheduled_backup_run_request(
     Returns
     -------
     tuple[BackupScheduleSpec, str | None]
-        The persisted schedule definition and current display name if present.
+        The persisted scheduled-task record and current display name if present.
+
+    Notes
+    -----
+    This function still exposes compatibility backup-definition inputs because
+    the current scheduled execution path has not yet been realigned. The
+    scheduler itself remains a trigger-only boundary.
     """
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
     schedule = store.load_backup_schedule(job_id)

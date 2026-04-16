@@ -169,7 +169,7 @@ class ProfileStore(Protocol):
 
     def load_backup_schedule(self, job_id: JobId) -> BackupScheduleSpec:
         """
-        Load the persisted backup schedule for a job.
+        Load the persisted scheduled-task record for a job.
 
         Parameters
         ----------
@@ -179,7 +179,9 @@ class ProfileStore(Protocol):
         Returns
         -------
         BackupScheduleSpec
-            Persisted schedule definition.
+            Persisted scheduled-task record. Trigger metadata is authoritative
+            for scheduling; any attached backup-definition data is transitional
+            compatibility state only.
 
         Raises
         ------
@@ -190,12 +192,14 @@ class ProfileStore(Protocol):
 
     def save_backup_schedule(self, schedule: BackupScheduleSpec) -> None:
         """
-        Persist the backup schedule for a job.
+        Persist the scheduled-task record for a job.
 
         Parameters
         ----------
         schedule:
-            Schedule definition to persist.
+            Scheduled-task record to persist. Scheduling owns trigger metadata
+            only; any attached backup-definition payload is transitional
+            compatibility state.
 
         Raises
         ------
