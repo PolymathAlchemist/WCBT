@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from PySide6.QtCore import (
     QMetaObject,
@@ -33,7 +34,10 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -46,6 +50,9 @@ from PySide6.QtWidgets import (
 )
 
 from backup_engine.backup.service import BackupRunResult, run_backup
+from backup_engine.job_binding import JobBinding
+from backup_engine.profile_store.errors import UnknownJobError
+from backup_engine.profile_store.sqlite_store import open_profile_store
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
 from gui.settings_store import load_gui_settings
 
@@ -58,6 +65,78 @@ def _mono() -> QFont:
 
 def _format_dt(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+class _TemplateChoice(NamedTuple):
+    label: str
+    template_id: str | None
+
+
+class JobBindingDialog(QDialog):
+    """Minimal dialog for creating or editing a Job binding."""
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        title: str,
+        initial_name: str,
+        initial_source_root: str,
+        template_choices: list[_TemplateChoice],
+        initial_template_id: str | None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.resize(520, 180)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.name_edit = QLineEdit(initial_name)
+        form.addRow("Job name:", self.name_edit)
+
+        self.template_combo = QComboBox()
+        for choice in template_choices:
+            self.template_combo.addItem(choice.label, choice.template_id)
+        if initial_template_id is not None:
+            for index in range(self.template_combo.count()):
+                if str(self.template_combo.itemData(index) or "") == initial_template_id:
+                    self.template_combo.setCurrentIndex(index)
+                    break
+        form.addRow("Template:", self.template_combo)
+
+        source_row = QHBoxLayout()
+        self.source_edit = QLineEdit(initial_source_root)
+        self.source_edit.setPlaceholderText("Choose source folder for this job…")
+        browse_button = QPushButton("Browse…")
+        browse_button.clicked.connect(self._browse_source)
+        source_row.addWidget(self.source_edit, 1)
+        source_row.addWidget(browse_button)
+        form.addRow("Source folder:", source_row)
+
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_name(self) -> str:
+        return self.name_edit.text().strip()
+
+    def selected_template_id(self) -> str | None:
+        value = self.template_combo.currentData()
+        return str(value) if value is not None else None
+
+    def selected_source_root(self) -> str:
+        return self.source_edit.text().strip()
+
+    def _browse_source(self) -> None:
+        start_dir = self.source_edit.text().strip() or str(Path.home())
+        directory = QFileDialog.getExistingDirectory(self, "Select source folder", start_dir)
+        if directory:
+            self.source_edit.setText(directory)
 
 
 class BackupWorker(QObject):
@@ -174,6 +253,8 @@ class RunTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._active_job_id: str | None = None
+        self._current_job_binding: JobBinding | None = None
+        self._pending_select_job_id: str | None = None
         self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
         self._store.jobs_loaded.connect(self._on_jobs_loaded)
         self._store.error.connect(self._on_store_error)
@@ -189,10 +270,17 @@ class RunTab(QWidget):
         self.job_combo = QComboBox()
         self.job_combo.setEnabled(False)
         self.job_combo.currentIndexChanged.connect(self._on_job_changed)
+        self.btn_new_job = QPushButton("New Job…")
+        self.btn_new_job.clicked.connect(self._new_job)
+        self.btn_edit_job = QPushButton("Edit Job…")
+        self.btn_edit_job.clicked.connect(self._edit_job)
+        self.btn_edit_job.setEnabled(False)
 
         job_select_row = QHBoxLayout()
         job_select_row.addWidget(QLabel("Selected job:"))
         job_select_row.addWidget(self.job_combo, 1)
+        job_select_row.addWidget(self.btn_new_job)
+        job_select_row.addWidget(self.btn_edit_job)
         job_stack.addLayout(job_select_row)
 
         self.source_edit = QLineEdit()
@@ -290,9 +378,60 @@ class RunTab(QWidget):
             return None
         return str(self.job_combo.currentData())
 
-    def _backup_now(self) -> None:
-        job_id = self._selected_job_id()
+    def _open_store(self):
+        return open_profile_store(profile_name="default", data_root=None)
+
+    def _refresh_job_binding(self, job_id: str | None) -> None:
         if job_id is None:
+            self._current_job_binding = None
+            self.source_edit.setText("")
+            self.btn_edit_job.setEnabled(False)
+            return
+
+        try:
+            binding = self._open_store().load_job_binding(job_id)
+        except Exception as exc:
+            self._current_job_binding = None
+            self.source_edit.setText("")
+            self.btn_edit_job.setEnabled(False)
+            self.status_label.setText("Error")
+            QMessageBox.critical(self, "Profile Store Error", str(exc))
+            return
+
+        self._current_job_binding = binding
+        self.source_edit.setText(binding.source_root)
+        self.btn_edit_job.setEnabled(True)
+
+    def _template_choices(self) -> list[_TemplateChoice]:
+        store = self._open_store()
+        choices: list[_TemplateChoice] = [_TemplateChoice("Create new template", None)]
+        for summary in store.list_jobs():
+            binding = store.load_job_binding(summary.job_id)
+            choices.append(
+                _TemplateChoice(
+                    f"Reuse template from '{binding.job_name}'",
+                    binding.template_id,
+                )
+            )
+        return choices
+
+    def _persist_current_source_root_if_needed(self, source_root: str) -> None:
+        binding = self._current_job_binding
+        if binding is None or binding.source_root == source_root:
+            return
+
+        updated_binding = JobBinding(
+            job_id=binding.job_id,
+            job_name=binding.job_name,
+            template_id=binding.template_id,
+            source_root=source_root,
+        )
+        self._open_store().save_job_binding(updated_binding)
+        self._current_job_binding = updated_binding
+
+    def _backup_now(self) -> None:
+        binding = self._current_job_binding
+        if binding is None:
             QMessageBox.information(self, "Backup", "Select a job first.")
             return
 
@@ -304,6 +443,12 @@ class RunTab(QWidget):
         source = Path(source_text)
         if not source.exists() or not source.is_dir():
             QMessageBox.critical(self, "Backup", "Source folder does not exist.")
+            return
+
+        try:
+            self._persist_current_source_root_if_needed(source_text)
+        except Exception as exc:
+            QMessageBox.critical(self, "Profile Store Error", str(exc))
             return
 
         self.btn_backup_now.setEnabled(False)
@@ -318,7 +463,7 @@ class RunTab(QWidget):
         self.status_label.setText(f"{action}: {self.job_combo.currentText()} …")
         self.summary.setPlainText(f"{action} backup…")
 
-        self._worker.configure(job_id, self.job_combo.currentText(), source, mode)
+        self._worker.configure(binding.job_id, binding.job_name, source, mode)
         QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
 
     def _open_artifacts(self) -> None:
@@ -362,12 +507,21 @@ class RunTab(QWidget):
 
         if self.job_combo.count() == 0:
             self.job_combo.setEnabled(False)
-            self.status_label.setText("No jobs yet. Create one in Authoring.")
+            self.status_label.setText("No jobs yet. Create one here or in Authoring.")
             self.btn_backup_now.setEnabled(False)
+            self.btn_edit_job.setEnabled(False)
+            self._current_job_binding = None
             return
 
         self.job_combo.setEnabled(True)
         self.btn_backup_now.setEnabled(True)
+        if self._pending_select_job_id is not None:
+            target = self._pending_select_job_id
+            self._pending_select_job_id = None
+            for index in range(self.job_combo.count()):
+                if str(self.job_combo.itemData(index)) == target:
+                    self.job_combo.setCurrentIndex(index)
+                    break
         self._on_job_changed()
 
     def _on_store_error(self, job_id: str, message: str) -> None:
@@ -376,6 +530,112 @@ class RunTab(QWidget):
 
     def _on_job_changed(self) -> None:
         self._active_job_id = self._selected_job_id()
+        self._refresh_job_binding(self._active_job_id)
+
+    def _job_name_exists(self, name: str, *, excluding_job_id: str | None = None) -> bool:
+        name_lower = name.strip().lower()
+        for index in range(self.job_combo.count()):
+            job_id = str(self.job_combo.itemData(index))
+            if excluding_job_id is not None and job_id == excluding_job_id:
+                continue
+            if str(self.job_combo.itemText(index)).strip().lower() == name_lower:
+                return True
+        return False
+
+    def _new_job(self) -> None:
+        try:
+            template_choices = self._template_choices()
+        except Exception as exc:
+            QMessageBox.critical(self, "Profile Store Error", str(exc))
+            return
+
+        dialog = JobBindingDialog(
+            self,
+            title="New Job",
+            initial_name="",
+            initial_source_root=self.source_edit.text().strip(),
+            template_choices=template_choices,
+            initial_template_id=None,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        name = dialog.selected_name()
+        if not name:
+            QMessageBox.warning(self, "New Job", "Job name cannot be empty.")
+            return
+        if self._job_name_exists(name):
+            QMessageBox.warning(self, "New Job", "A job with that name already exists.")
+            return
+
+        try:
+            store = self._open_store()
+            job_id = store.create_job(name)
+            created_binding = store.load_job_binding(job_id)
+            store.save_job_binding(
+                JobBinding(
+                    job_id=job_id,
+                    job_name=name,
+                    template_id=dialog.selected_template_id() or created_binding.template_id,
+                    source_root=dialog.selected_source_root(),
+                )
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Profile Store Error", str(exc))
+            return
+
+        self._pending_select_job_id = job_id
+        self._store.request_list_jobs.emit()
+
+    def _edit_job(self) -> None:
+        binding = self._current_job_binding
+        if binding is None:
+            QMessageBox.information(self, "Edit Job", "Select a job first.")
+            return
+
+        try:
+            template_choices = self._template_choices()
+        except Exception as exc:
+            QMessageBox.critical(self, "Profile Store Error", str(exc))
+            return
+
+        dialog = JobBindingDialog(
+            self,
+            title="Edit Job",
+            initial_name=binding.job_name,
+            initial_source_root=self.source_edit.text().strip() or binding.source_root,
+            template_choices=template_choices,
+            initial_template_id=binding.template_id,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        name = dialog.selected_name()
+        if not name:
+            QMessageBox.warning(self, "Edit Job", "Job name cannot be empty.")
+            return
+        if self._job_name_exists(name, excluding_job_id=binding.job_id):
+            QMessageBox.warning(self, "Edit Job", "A job with that name already exists.")
+            return
+
+        try:
+            updated_binding = JobBinding(
+                job_id=binding.job_id,
+                job_name=name,
+                template_id=dialog.selected_template_id() or binding.template_id,
+                source_root=dialog.selected_source_root(),
+            )
+            self._open_store().save_job_binding(updated_binding)
+        except UnknownJobError:
+            QMessageBox.critical(self, "Edit Job", "The selected job no longer exists.")
+            return
+        except Exception as exc:
+            QMessageBox.critical(self, "Profile Store Error", str(exc))
+            return
+
+        self._current_job_binding = updated_binding
+        self._pending_select_job_id = updated_binding.job_id
+        self._store.request_list_jobs.emit()
 
     def shutdown(self) -> None:
         """

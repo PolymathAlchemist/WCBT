@@ -33,9 +33,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backup_engine.profile_store.api import RuleSet
 from backup_engine.profile_store.errors import InvalidRuleError
-from backup_engine.profile_store.rules import normalize_rules
+from backup_engine.profile_store.rules import normalize_template_selection_rules
+from backup_engine.template_policy import TemplateSelectionRules
 
 
 def _mono() -> QFont:
@@ -266,7 +266,9 @@ class RuleEditorDialog(QDialog):
         syntax_ok = True
         if text:
             try:
-                normalize_rules(RuleSet(include=(text,), exclude=()))
+                normalize_template_selection_rules(
+                    TemplateSelectionRules(include=(text,), exclude=())
+                )
                 self._syntax_label.setText("Syntax: OK")
             except InvalidRuleError as exc:
                 syntax_ok = False

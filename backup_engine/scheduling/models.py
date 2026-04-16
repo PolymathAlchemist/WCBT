@@ -17,7 +17,6 @@ from backup_engine.errors import InvalidScheduleError
 
 if TYPE_CHECKING:
     from backup_engine.job_binding import JobBinding
-    from backup_engine.profile_store.api import JobBackupDefaults
 
 _WEEKDAY_ORDER: tuple[str, ...] = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 _WEEKDAY_INDEX: dict[str, int] = {day: idx for idx, day in enumerate(_WEEKDAY_ORDER)}
@@ -231,10 +230,9 @@ class ScheduledBackupStatus:
     current_job_binding:
         Current authoritative Job binding. This is the canonical Job read shape
         for identity, Template reference, and live target binding.
-    current_backup_defaults:
-        Current Job-shaped compatibility carrier. These values are shown
-        alongside the trigger for user-facing convenience and policy display,
-        but they are not part of the scheduling boundary.
+    current_template_compression:
+        Current authoritative Template compression policy shown alongside the
+        trigger for user-facing convenience.
     task_name:
         Derived Windows task name for the job.
     task_exists:
@@ -245,7 +243,7 @@ class ScheduledBackupStatus:
 
     schedule: BackupScheduleSpec
     current_job_binding: JobBinding
-    current_backup_defaults: JobBackupDefaults | None
+    current_template_compression: str | None
     task_name: str
     task_exists: bool
     scheduler_details: Mapping[str, str]

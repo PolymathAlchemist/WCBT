@@ -20,9 +20,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
-from backup_engine.profile_store.api import RuleSet
 from backup_engine.profile_store.errors import UnknownJobError
 from backup_engine.profile_store.sqlite_store import open_profile_store
+from backup_engine.template_policy import TemplateSelectionRules
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,7 +143,7 @@ class ProfileStoreWorker(QObject):
     def load_rules(self, job_id: str) -> None:
         """Load rules for job_id and emit results."""
         try:
-            rules = self._store.load_rules(job_id)
+            rules = self._store.load_template_selection_rules(job_id)
         except UnknownJobError:
             self.unknown_job.emit(job_id)
             return
@@ -159,10 +159,13 @@ class ProfileStoreWorker(QObject):
         try:
             gui_rules = rules
             assert isinstance(gui_rules, GuiRuleSet)
-            self._store.save_rules(
+            self._store.save_template_selection_rules(
                 job_id=job_id,
                 name=name,
-                rules=RuleSet(include=gui_rules.include, exclude=gui_rules.exclude),
+                selection_rules=TemplateSelectionRules(
+                    include=gui_rules.include,
+                    exclude=gui_rules.exclude,
+                ),
             )
         except Exception as e:
             self.error.emit(job_id, str(e))

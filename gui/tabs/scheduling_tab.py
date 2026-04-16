@@ -459,13 +459,11 @@ class SchedulingTab(QWidget):
         ----------
         status:
             Combined persisted trigger, task state, current authoritative Job
-            binding, and compatibility backup defaults.
+            binding, and current Template compression.
         """
         self.source_edit.setText(status.current_job_binding.source_root)
-        if status.current_backup_defaults is not None:
-            self._select_combo_by_data(
-                self.compression_combo, status.current_backup_defaults.compression
-            )
+        if status.current_template_compression is not None:
+            self._select_combo_by_data(self.compression_combo, status.current_template_compression)
         else:
             self.compression_combo.setCurrentIndex(0)
         self.start_time_edit.setText(status.schedule.start_time_local)
@@ -501,7 +499,7 @@ class SchedulingTab(QWidget):
         ----------
         status:
             Combined persisted trigger, task state, current authoritative Job
-            binding, and compatibility backup defaults.
+            binding, and current Template compression.
 
         Returns
         -------
@@ -523,10 +521,10 @@ class SchedulingTab(QWidget):
         lines.append(f"  job_name: {status.current_job_binding.job_name}")
         lines.append(f"  template_id: {status.current_job_binding.template_id}")
         lines.append(f"  source_root: {status.current_job_binding.source_root}")
-        if status.current_backup_defaults is not None:
+        if status.current_template_compression is not None:
             lines.append("")
             lines.append("CURRENT TEMPLATE POLICY VIEW")
-            lines.append(f"  compression: {status.current_backup_defaults.compression}")
+            lines.append(f"  compression: {status.current_template_compression}")
         if status.scheduler_details:
             lines.append("")
             lines.append("TASK SCHEDULER")

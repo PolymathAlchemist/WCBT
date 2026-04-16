@@ -13,12 +13,10 @@ Invariants
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Sequence
 
 from backup_engine.template_policy import TemplateSelectionRules
 
-from .api import RuleSet
 from .errors import InvalidRuleError
 
 
@@ -52,36 +50,6 @@ def normalize_patterns(values: Sequence[str]) -> tuple[str, ...]:
             raise InvalidRuleError("Patterns must be root-relative and must not contain ':'.")
         out.append(cleaned)
     return tuple(out)
-
-
-def normalize_rules(rules: RuleSet) -> RuleSet:
-    """
-    Normalize and validate a RuleSet.
-
-    Notes
-    -----
-    This is a syntax-only operation. It does not touch disk.
-
-    Parameters
-    ----------
-    rules:
-        Raw include/exclude patterns.
-
-    Returns
-    -------
-    RuleSet
-        Normalized rules.
-
-    Raises
-    ------
-    InvalidRuleError
-        If any pattern violates invariants.
-    """
-    return replace(
-        rules,
-        include=normalize_patterns(rules.include),
-        exclude=normalize_patterns(rules.exclude),
-    )
 
 
 def normalize_template_selection_rules(

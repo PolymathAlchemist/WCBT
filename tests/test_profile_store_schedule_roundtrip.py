@@ -60,16 +60,16 @@ def test_profile_store_persists_trigger_without_writing_legacy_schedule_mirror(
         schedule_columns = {
             str(column["name"]) for column in connection.execute("PRAGMA table_info(job_schedules)")
         }
-        retired_legacy_row = connection.execute(
-            "SELECT source_root, compression FROM scheduled_backup_legacy_inputs WHERE job_id = ?",
-            (job_id,),
+        legacy_table_row = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'scheduled_backup_legacy_inputs'"
         ).fetchone()
     finally:
         connection.close()
 
     assert "source_root" not in schedule_columns
     assert "compression" not in schedule_columns
-    assert retired_legacy_row is None
+    assert legacy_table_row is None
 
 
 def test_profile_store_delete_backup_schedule_is_idempotent(tmp_path: Path) -> None:

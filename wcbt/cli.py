@@ -449,8 +449,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"{','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
             )
             print(f"Current source : {status.current_job_binding.source_root}")
-            if status.current_backup_defaults is not None:
-                print(f"Current comp.  : {status.current_backup_defaults.compression}")
+            if status.current_template_compression is not None:
+                print(f"Current comp.  : {status.current_template_compression}")
             print(f"Task exists    : {'yes' if status.task_exists else 'no'}")
             return 0
 
@@ -473,8 +473,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"{','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
             )
             print(f"Current source : {status.current_job_binding.source_root}")
-            if status.current_backup_defaults is not None:
-                print(f"Current comp.  : {status.current_backup_defaults.compression}")
+            if status.current_template_compression is not None:
+                print(f"Current comp.  : {status.current_template_compression}")
             print(f"Task exists    : {'yes' if status.task_exists else 'no'}")
             return 0
 
@@ -509,21 +509,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scheduled-backup":
         data_root = Path(args.data_root) if args.data_root else None
         try:
-            backup_defaults, job_name = load_scheduled_backup_run_request(
+            job_binding, compression = load_scheduled_backup_run_request(
                 profile_name=args.profile,
                 data_root=data_root,
                 job_id=args.job_id,
             )
             run_backup(
                 profile_name=args.profile,
-                source=Path(backup_defaults.source_root),
+                source=Path(job_binding.source_root),
                 dry_run=False,
                 data_root=data_root,
                 execute=True,
-                compress=backup_defaults.compression != "none",
-                compression=backup_defaults.compression,
+                compress=compression != "none",
+                compression=compression,
                 job_id=args.job_id,
-                job_name=job_name,
+                job_name=job_binding.job_name,
             )
         except (SafetyViolationError, WcbtError, ValueError) as exc:
             print(f"ERROR: {exc}")

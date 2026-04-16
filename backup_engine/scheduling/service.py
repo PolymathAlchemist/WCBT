@@ -2,9 +2,7 @@
 
 Notes
 -----
-Scheduling is a trigger-only support layer. If scheduled execution still
-depends on persisted backup-definition inputs, that dependency is transitional
-compatibility state rather than scheduler-owned meaning.
+Scheduling is a trigger-only support layer.
 """
 
 from __future__ import annotations
@@ -14,7 +12,6 @@ import sys
 from pathlib import Path
 
 from backup_engine.job_binding import JobBinding
-from backup_engine.profile_store.api import JobBackupDefaults, ProfileStore
 from backup_engine.profile_store.sqlite_store import open_profile_store
 
 from .models import BackupScheduleSpec, ScheduledBackupStatus, normalize_schedule_spec
@@ -86,14 +83,6 @@ def create_or_update_scheduled_backup(
     )
 
     store.save_backup_schedule(normalized)
-    if normalized.legacy_definition is not None:
-        store.save_job_backup_defaults(
-            normalized.job_id,
-            JobBackupDefaults(
-                source_root=normalized.source_root,
-                compression=normalized.compression,
-            ),
-        )
     (backend or SchtasksBackend()).create_task(
         task_name=task_name,
         task_command=task_command,
@@ -134,22 +123,19 @@ def query_scheduled_backup(
     -------
     ScheduledBackupStatus
         Persisted scheduled-task trigger plus current Windows task presence
-        details, with current job-backed backup defaults attached only for
+        details, with current authoritative Job and Template data attached for
         user-facing convenience.
     """
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
     schedule = store.load_backup_schedule(job_id)
     current_job_binding = store.load_job_binding(job_id)
-    current_backup_defaults = _load_current_backup_defaults(
-        store=store,
-        current_job_binding=current_job_binding,
-    )
+    current_template_compression = store.load_template_compression(current_job_binding.job_id)
     task_name = scheduled_task_name(profile_name=profile_name, job_id=job_id)
     task_info = (backend or SchtasksBackend()).query_task(task_name=task_name)
     return ScheduledBackupStatus(
         schedule=schedule,
         current_job_binding=current_job_binding,
-        current_backup_defaults=current_backup_defaults,
+        current_template_compression=current_template_compression,
         task_name=task_name,
         task_exists=task_info.exists,
         scheduler_details=dict(task_info.details),
@@ -215,9 +201,9 @@ def load_scheduled_backup_run_request(
     profile_name: str,
     data_root: Path | None,
     job_id: str,
-) -> tuple[JobBackupDefaults, str | None]:
+) -> tuple[JobBinding, str]:
     """
-    Load the current job-backed backup defaults and job name for a scheduled run.
+    Load the current Job binding and Template compression for a scheduled run.
 
     Parameters
     ----------
@@ -230,50 +216,13 @@ def load_scheduled_backup_run_request(
 
     Returns
     -------
-    tuple[JobBackupDefaults, str | None]
-        The current backup defaults and current display name if present.
-
-    Notes
-    -----
-    Scheduled execution must resolve its backup meaning from the current live
-    job-backed defaults rather than from schedule-carried definition data. The
-    scheduler remains a trigger-only boundary.
+    tuple[JobBinding, str]
+        Current authoritative Job binding and current Template compression.
     """
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
     current_job_binding = store.load_job_binding(job_id)
-    defaults = _load_current_backup_defaults(
-        store=store,
-        current_job_binding=current_job_binding,
-    )
-    return defaults, current_job_binding.job_name
-
-
-def _load_current_backup_defaults(
-    *,
-    store: ProfileStore,
-    current_job_binding: JobBinding,
-) -> JobBackupDefaults:
-    """
-    Build the compatibility backup-defaults view from authoritative reads.
-
-    Parameters
-    ----------
-    store:
-        Profile store implementation used to resolve current Template policy.
-    current_job_binding:
-        Current authoritative Job binding.
-
-    Returns
-    -------
-    JobBackupDefaults
-        Compatibility carrier built from authoritative Job binding plus
-        current Template-owned compression policy.
-    """
     compression = store.load_template_compression(current_job_binding.job_id)
-    return JobBackupDefaults(
-        source_root=current_job_binding.source_root,
-        compression=compression,
-    )
+    return current_job_binding, compression
 
 
 def _build_scheduled_backup_command(

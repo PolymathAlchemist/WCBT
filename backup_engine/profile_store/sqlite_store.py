@@ -6,9 +6,6 @@ This module owns the on-disk persistence format for per-job authoring rules.
 Notes
 -----
 Template is the authoritative owner of selection rules and compression policy.
-This store still persists Job-shaped compatibility carriers for those fields so
-current runtime and authoring paths remain stable during the boundary
-introduction sequence.
 
 Threading
 ---------
@@ -30,14 +27,41 @@ from backup_engine.scheduling.models import BackupScheduleSpec, normalize_schedu
 from backup_engine.template_policy import TemplateSelectionRules
 
 from ..paths_and_safety import ProfilePaths, ensure_profile_directories, resolve_profile_paths
-from .api import JobBackupDefaults, JobId, JobSummary, ProfileStore, RuleSet
-from .errors import InvalidRuleError, UnknownJobError
+from .api import JobId, JobSummary, ProfileStore
+from .errors import IncompatibleProfileStoreError, InvalidRuleError, UnknownJobError
 from .rules import normalize_template_selection_rules
 from .schema import SCHEMA_V1
 
 # Stable UUID namespace for JobId derivation.
 # Changing this will invalidate all persisted job identities.
 JOB_ID_NAMESPACE: Final[uuid.UUID] = uuid.UUID("6b0e2c7a-8e8f-4c5a-bb5d-9e6c6a3e7a01")
+
+
+def _build_incompatible_contract_message(*, job_id: JobId, missing_field: str) -> str:
+    """
+    Return a user-facing message for a pre-contract profile database.
+
+    Parameters
+    ----------
+    job_id:
+        Identifier of the incompatible job row.
+    missing_field:
+        Required authoritative field that is missing from the persisted row.
+
+    Returns
+    -------
+    str
+        User-facing incompatibility message with recovery guidance.
+    """
+
+    return (
+        "This profile database was created by a pre-contract WCBT build and is no longer "
+        "compatible with the current refactored job/template schema. "
+        f"The persisted job row is missing required field '{missing_field}' "
+        f"(job_id: {job_id}). "
+        "Delete and recreate the local profile database, or run a future migration tool if "
+        "one is added later."
+    )
 
 
 def _new_template_id() -> str:
@@ -71,44 +95,6 @@ def profile_store_db_path(profile_name: str, data_root: Path | None) -> Path:
     """
     paths: ProfilePaths = resolve_profile_paths(profile_name=profile_name, data_root=data_root)
     return paths.index_root / "profiles.sqlite"
-
-
-def _normalize_patterns(values: Sequence[str]) -> tuple[str, ...]:
-    """
-    Normalize user-authored glob patterns.
-
-    Invariants
-    ----------
-    - Root-relative: must not start with '/' and must not contain a drive hint ':'
-    - Uses '/' separators (backslashes are normalized to '/')
-    - Empty patterns are dropped after stripping
-
-    Parameters
-    ----------
-    values:
-        Raw patterns from UI input.
-
-    Returns
-    -------
-    tuple[str, ...]
-        Normalized patterns, preserving order.
-
-    Raises
-    ------
-    InvalidRuleError
-        If any pattern violates invariants.
-    """
-    out: list[str] = []
-    for raw in values:
-        cleaned = str(raw).strip().replace("\\", "/")
-        if not cleaned:
-            continue
-        if cleaned.startswith("/"):
-            raise InvalidRuleError("Patterns must be root-relative and must not start with '/'.")
-        if ":" in cleaned:
-            raise InvalidRuleError("Patterns must be root-relative and must not contain ':'.")
-        out.append(cleaned)
-    return tuple(out)
 
 
 def _normalize_template_compression(value: str) -> str:
@@ -151,9 +137,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS profile_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
     )
 
-    # Ensure the trigger-only schedule table and transitional compatibility
-    # table exist, even for databases created before the scheduling boundary
-    # was split.
+    # Ensure the authoritative Template policy tables and schedule table exist.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS template_selection_rules ("
         "template_id TEXT NOT NULL, "
@@ -179,21 +163,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "weekdays TEXT NULL, "
         "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)"
     )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS scheduled_backup_legacy_inputs ("
-        "job_id TEXT PRIMARY KEY, "
-        "source_root TEXT NOT NULL, "
-        "compression TEXT NOT NULL DEFAULT 'none', "
-        "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS job_backup_defaults ("
-        "job_id TEXT PRIMARY KEY, "
-        "source_root TEXT NOT NULL, "
-        "compression TEXT NOT NULL DEFAULT 'none', "
-        "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)"
-    )
-
     # Ensure jobs has is_deleted column for soft deletion.
     cols = conn.execute("PRAGMA table_info(jobs)").fetchall()
     col_names = {str(r["name"]) for r in cols}
@@ -209,6 +178,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN archive_root TEXT NULL")
     if "restore_dest_root" not in col_names:
         conn.execute("ALTER TABLE jobs ADD COLUMN restore_dest_root TEXT NULL")
+
+    conn.execute("DROP TABLE IF EXISTS rules")
+    conn.execute("DROP TABLE IF EXISTS job_backup_defaults")
+    conn.execute("DROP TABLE IF EXISTS scheduled_backup_legacy_inputs")
 
 
 def _get_or_create_profile_id(conn: sqlite3.Connection) -> str:
@@ -230,23 +203,9 @@ def _get_or_create_profile_id(conn: sqlite3.Connection) -> str:
     return profile_id
 
 
-def _legacy_template_id_for_job(job_id: JobId) -> str:
+def _load_template_id(conn: sqlite3.Connection, job_id: JobId) -> str:
     """
-    Return the legacy Template routing key for a job.
-
-    Notes
-    -----
-    Older data stored Template-owned policy under a job-derived key. That
-    routing remains readable as a compatibility fallback while independent
-    Template identity is introduced incrementally.
-    """
-
-    return job_id
-
-
-def _load_or_create_template_id(conn: sqlite3.Connection, job_id: JobId) -> str:
-    """
-    Return the persisted independent Template identifier for a job.
+    Return the authoritative Template identifier referenced by a job.
 
     Parameters
     ----------
@@ -258,32 +217,23 @@ def _load_or_create_template_id(conn: sqlite3.Connection, job_id: JobId) -> str:
     Returns
     -------
     str
-        Independent Template identifier referenced by the job.
+        Persisted Template identifier referenced by the job.
 
     Raises
     ------
     UnknownJobError
         If the job does not exist or has been soft deleted.
-
-    Notes
-    -----
-    Existing jobs created before explicit Template identity existed are lazily
-    assigned a new independent Template identifier here. Template-owned policy
-    reads continue to fall back to the legacy job-derived routing key so this
-    backfill does not require broad migration.
+    IncompatibleProfileStoreError
+        If the job row predates the post-cutover contract.
     """
 
     row = _load_existing_job_row(conn, job_id)
     template_id_raw = row["template_id"]
-    if template_id_raw is not None and str(template_id_raw).strip():
-        return str(template_id_raw)
-
-    template_id = _new_template_id()
-    conn.execute(
-        "UPDATE jobs SET template_id = ? WHERE job_id = ? AND is_deleted = 0",
-        (template_id, job_id),
-    )
-    return template_id
+    if template_id_raw is None or not str(template_id_raw).strip():
+        raise IncompatibleProfileStoreError(
+            _build_incompatible_contract_message(job_id=job_id, missing_field="template_id")
+        )
+    return str(template_id_raw)
 
 
 def _load_existing_job_row(conn: sqlite3.Connection, job_id: JobId) -> sqlite3.Row:
@@ -318,7 +268,7 @@ def _load_existing_job_row(conn: sqlite3.Connection, job_id: JobId) -> sqlite3.R
     return cast(sqlite3.Row, row)
 
 
-def _load_or_promote_job_source_root(conn: sqlite3.Connection, job_id: JobId) -> str:
+def _load_job_source_root(conn: sqlite3.Connection, job_id: JobId) -> str:
     """
     Return the authoritative Job-owned source root for a job.
 
@@ -338,35 +288,11 @@ def _load_or_promote_job_source_root(conn: sqlite3.Connection, job_id: JobId) ->
     ------
     UnknownJobError
         If the job does not exist or has been soft deleted.
-
-    Notes
-    -----
-    Older data may still store the binding root only in compatibility mirrors.
-    When encountered, this function promotes the value into the Job row so
-    future reads use authoritative Job-owned storage directly.
     """
 
     row = _load_existing_job_row(conn, job_id)
     source_root_raw = row["source_root"]
-    if source_root_raw is not None:
-        return str(source_root_raw)
-
-    source_root_row = conn.execute(
-        "SELECT source_root FROM job_backup_defaults WHERE job_id = ?",
-        (job_id,),
-    ).fetchone()
-    if source_root_row is None:
-        source_root_row = conn.execute(
-            "SELECT source_root FROM scheduled_backup_legacy_inputs WHERE job_id = ?",
-            (job_id,),
-        ).fetchone()
-
-    source_root = str(source_root_row["source_root"]) if source_root_row is not None else ""
-    conn.execute(
-        "UPDATE jobs SET source_root = ? WHERE job_id = ? AND is_deleted = 0",
-        (source_root, job_id),
-    )
-    return source_root
+    return str(source_root_raw) if source_root_raw is not None else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,8 +337,8 @@ class SqliteProfileStore(ProfileStore):
         with self._connect() as conn:
             _ensure_schema(conn)
             row = _load_existing_job_row(conn, job_id)
-            template_id = _load_or_create_template_id(conn, job_id)
-            source_root = _load_or_promote_job_source_root(conn, job_id)
+            template_id = _load_template_id(conn, job_id)
+            source_root = _load_job_source_root(conn, job_id)
 
         return JobBinding(
             job_id=str(row["job_id"]),
@@ -420,6 +346,25 @@ class SqliteProfileStore(ProfileStore):
             template_id=template_id,
             source_root=source_root,
         )
+
+    def save_job_binding(self, binding: JobBinding) -> None:
+        """See ProfileStore.save_job_binding."""
+        job_name = binding.job_name.strip()
+        template_id = binding.template_id.strip()
+        if not job_name:
+            raise ValueError("job_name must not be empty.")
+        if not template_id:
+            raise ValueError("template_id must not be empty.")
+
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            cur = conn.execute(
+                "UPDATE jobs SET name = ?, template_id = ?, source_root = ? "
+                "WHERE job_id = ? AND is_deleted = 0",
+                (job_name, template_id, binding.source_root, binding.job_id),
+            )
+            if cur.rowcount == 0:
+                raise UnknownJobError(f"Unknown job_id: {binding.job_id}")
 
     def load_restore_defaults(self, job_id: JobId) -> tuple[str | None, str | None]:
         """
@@ -512,22 +457,6 @@ class SqliteProfileStore(ProfileStore):
             if cur.rowcount == 0:
                 raise UnknownJobError(f"Unknown job_id: {job_id}")
 
-    def load_rules(self, job_id: JobId) -> RuleSet:
-        """See ProfileStore.load_rules."""
-        selection_rules = self.load_template_selection_rules(job_id)
-        return RuleSet(
-            include=selection_rules.include,
-            exclude=selection_rules.exclude,
-        )
-
-    def save_rules(self, job_id: JobId, name: str, rules: RuleSet) -> None:
-        """See ProfileStore.save_rules."""
-        self.save_template_selection_rules(
-            job_id=job_id,
-            name=name,
-            selection_rules=rules.to_template_selection_rules(),
-        )
-
     def load_template_selection_rules(self, job_id: JobId) -> TemplateSelectionRules:
         """See ProfileStore.load_template_selection_rules."""
         with self._connect() as conn:
@@ -539,7 +468,7 @@ class SqliteProfileStore(ProfileStore):
             if job is None:
                 raise UnknownJobError(f"Unknown job_id: {job_id}")
 
-            template_id = _load_or_create_template_id(conn, job_id)
+            template_id = _load_template_id(conn, job_id)
             inc = conn.execute(
                 "SELECT pattern FROM template_selection_rules "
                 "WHERE template_id = ? AND kind = 'include' ORDER BY position ASC",
@@ -550,56 +479,6 @@ class SqliteProfileStore(ProfileStore):
                 "WHERE template_id = ? AND kind = 'exclude' ORDER BY position ASC",
                 (template_id,),
             ).fetchall()
-
-            if not inc and not exc:
-                legacy_template_id = _legacy_template_id_for_job(job_id)
-                if legacy_template_id != template_id:
-                    inc = conn.execute(
-                        "SELECT pattern FROM template_selection_rules "
-                        "WHERE template_id = ? AND kind = 'include' ORDER BY position ASC",
-                        (legacy_template_id,),
-                    ).fetchall()
-                    exc = conn.execute(
-                        "SELECT pattern FROM template_selection_rules "
-                        "WHERE template_id = ? AND kind = 'exclude' ORDER BY position ASC",
-                        (legacy_template_id,),
-                    ).fetchall()
-                    if inc or exc:
-                        for idx, pattern_row in enumerate(inc):
-                            conn.execute(
-                                "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
-                                "VALUES(?, 'include', ?, ?)",
-                                (template_id, str(pattern_row["pattern"]), idx),
-                            )
-                        for idx, pattern_row in enumerate(exc):
-                            conn.execute(
-                                "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
-                                "VALUES(?, 'exclude', ?, ?)",
-                                (template_id, str(pattern_row["pattern"]), idx),
-                            )
-
-            if not inc and not exc:
-                inc = conn.execute(
-                    "SELECT pattern FROM rules WHERE job_id = ? AND kind = 'include' ORDER BY position ASC",
-                    (job_id,),
-                ).fetchall()
-                exc = conn.execute(
-                    "SELECT pattern FROM rules WHERE job_id = ? AND kind = 'exclude' ORDER BY position ASC",
-                    (job_id,),
-                ).fetchall()
-                if inc or exc:
-                    for idx, pattern_row in enumerate(inc):
-                        conn.execute(
-                            "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
-                            "VALUES(?, 'include', ?, ?)",
-                            (template_id, str(pattern_row["pattern"]), idx),
-                        )
-                    for idx, pattern_row in enumerate(exc):
-                        conn.execute(
-                            "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
-                            "VALUES(?, 'exclude', ?, ?)",
-                            (template_id, str(pattern_row["pattern"]), idx),
-                        )
 
         return TemplateSelectionRules(
             include=tuple(str(row["pattern"]) for row in inc),
@@ -620,7 +499,7 @@ class SqliteProfileStore(ProfileStore):
             _ = name
             _load_existing_job_row(conn, job_id)
 
-            template_id = _load_or_create_template_id(conn, job_id)
+            template_id = _load_template_id(conn, job_id)
             conn.execute(
                 "DELETE FROM template_selection_rules "
                 "WHERE template_id = ? AND kind IN ('include','exclude')",
@@ -650,46 +529,11 @@ class SqliteProfileStore(ProfileStore):
             if job is None:
                 raise UnknownJobError(f"Unknown job_id: {job_id}")
 
-            template_id = _load_or_create_template_id(conn, job_id)
+            template_id = _load_template_id(conn, job_id)
             row = conn.execute(
                 "SELECT compression FROM template_backup_policy WHERE template_id = ?",
                 (template_id,),
             ).fetchone()
-            if row is None:
-                legacy_template_id = _legacy_template_id_for_job(job_id)
-                if legacy_template_id != template_id:
-                    row = conn.execute(
-                        "SELECT compression FROM template_backup_policy WHERE template_id = ?",
-                        (legacy_template_id,),
-                    ).fetchone()
-                    if row is not None:
-                        conn.execute(
-                            "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
-                            "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
-                            (template_id, str(row["compression"])),
-                        )
-            if row is None:
-                row = conn.execute(
-                    "SELECT compression FROM job_backup_defaults WHERE job_id = ?",
-                    (job_id,),
-                ).fetchone()
-                if row is not None:
-                    conn.execute(
-                        "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
-                        "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
-                        (template_id, _normalize_template_compression(str(row["compression"]))),
-                    )
-            if row is None:
-                row = conn.execute(
-                    "SELECT compression FROM scheduled_backup_legacy_inputs WHERE job_id = ?",
-                    (job_id,),
-                ).fetchone()
-                if row is not None:
-                    conn.execute(
-                        "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
-                        "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
-                        (template_id, _normalize_template_compression(str(row["compression"]))),
-                    )
             if row is None:
                 raise UnknownJobError(f"No template compression found for job_id: {job_id}")
 
@@ -704,7 +548,7 @@ class SqliteProfileStore(ProfileStore):
             _ = name
             _load_existing_job_row(conn, job_id)
 
-            template_id = _load_or_create_template_id(conn, job_id)
+            template_id = _load_template_id(conn, job_id)
             conn.execute(
                 "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
                 "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
@@ -722,11 +566,8 @@ class SqliteProfileStore(ProfileStore):
 
         Returns
         -------
-        BackupScheduleSpec
-            Persisted scheduled-task record with trigger metadata plus any
-            transitional compatibility payload still required by the current
-            scheduled execution path. Any attached ``compression`` value remains
-            Template-owned policy mirrored here for compatibility only.
+            BackupScheduleSpec
+                Persisted scheduled-task record.
 
         Raises
         ------
@@ -744,20 +585,6 @@ class SqliteProfileStore(ProfileStore):
             ).fetchone()
             if row is None:
                 raise UnknownJobError(f"No backup schedule found for job_id: {job_id}")
-
-            legacy_row = conn.execute("PRAGMA table_info(job_schedules)").fetchall()
-            legacy_columns = {str(column["name"]) for column in legacy_row}
-            if "source_root" in legacy_columns:
-                legacy_source_root_row = conn.execute(
-                    "SELECT source_root FROM job_schedules WHERE job_id = ?",
-                    (job_id,),
-                ).fetchone()
-                if legacy_source_root_row is not None:
-                    conn.execute(
-                        "UPDATE jobs SET source_root = COALESCE(source_root, ?) "
-                        "WHERE job_id = ? AND is_deleted = 0",
-                        (str(legacy_source_root_row["source_root"]), job_id),
-                    )
 
         weekdays_raw = str(row["weekdays"]) if row["weekdays"] is not None else ""
         weekdays = tuple(part for part in weekdays_raw.split(",") if part)
@@ -782,11 +609,7 @@ class SqliteProfileStore(ProfileStore):
         Parameters
         ----------
         schedule:
-            Scheduled-task record to persist. The scheduling boundary owns the
-            trigger metadata only; any backup-definition payload remains
-            compatibility state until later refactor steps remove it. In that
-            payload, ``source_root`` remains Job-owned target binding and
-            ``compression`` remains Template-owned policy.
+            Scheduled-task record to persist.
 
         Raises
         ------
@@ -839,57 +662,7 @@ class SqliteProfileStore(ProfileStore):
         """
         with self._connect() as conn:
             _ensure_schema(conn)
-            conn.execute("DELETE FROM scheduled_backup_legacy_inputs WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM job_schedules WHERE job_id = ?", (job_id,))
-
-    def load_job_backup_defaults(self, job_id: JobId) -> JobBackupDefaults:
-        """
-        Load the current Job-shaped compatibility carrier for backup inputs.
-        """
-        binding = self.load_job_binding(job_id)
-        compression = self.load_template_compression(job_id)
-        return JobBackupDefaults(
-            source_root=binding.source_root,
-            compression=compression,
-        )
-
-    def save_job_backup_defaults(self, job_id: JobId, defaults: JobBackupDefaults) -> None:
-        """
-        Persist the current Job-shaped compatibility carrier for backup inputs.
-
-        Notes
-        -----
-        This storage path is transitional. ``source_root`` remains Job-owned
-        target binding, and ``compression`` remains Template-owned policy.
-        """
-        with self._connect() as conn:
-            _ensure_schema(conn)
-            job = conn.execute(
-                "SELECT job_id FROM jobs WHERE job_id = ? AND is_deleted = 0",
-                (job_id,),
-            ).fetchone()
-            if job is None:
-                raise UnknownJobError(f"Unknown job_id: {job_id}")
-
-            job_name_row = conn.execute(
-                "SELECT name FROM jobs WHERE job_id = ? AND is_deleted = 0",
-                (job_id,),
-            ).fetchone()
-            if job_name_row is None:
-                raise UnknownJobError(f"Unknown job_id: {job_id}")
-
-        self.save_template_compression(
-            job_id=job_id,
-            name=str(job_name_row["name"]),
-            compression=defaults.compression,
-        )
-
-        with self._connect() as conn:
-            _ensure_schema(conn)
-            conn.execute(
-                "UPDATE jobs SET source_root = ? WHERE job_id = ? AND is_deleted = 0",
-                (defaults.source_root, job_id),
-            )
 
 
 def open_profile_store(profile_name: str, data_root: Path | None = None) -> SqliteProfileStore:
@@ -911,6 +684,47 @@ def open_profile_store(profile_name: str, data_root: Path | None = None) -> Sqli
     paths = resolve_profile_paths(profile_name=profile_name, data_root=data_root)
     ensure_profile_directories(paths)
     return SqliteProfileStore(db_path=paths.index_root / "profiles.sqlite")
+
+
+def validate_profile_store_contract(profile_name: str, data_root: Path | None = None) -> None:
+    """
+    Validate that the persisted profile database satisfies the current contract.
+
+    Parameters
+    ----------
+    profile_name:
+        Name of the WCBT profile.
+    data_root:
+        Optional override for the WCBT data root.
+
+    Raises
+    ------
+    IncompatibleProfileStoreError
+        If the persisted database predates the current contract.
+    """
+
+    database_path = profile_store_db_path(profile_name=profile_name, data_root=data_root)
+    if not database_path.exists():
+        return
+
+    conn = sqlite3.connect(database_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            "SELECT job_id, template_id FROM jobs WHERE is_deleted = 0 ORDER BY name ASC"
+        ).fetchall()
+        for row in rows:
+            template_id_raw = row["template_id"]
+            if template_id_raw is None or not str(template_id_raw).strip():
+                raise IncompatibleProfileStoreError(
+                    _build_incompatible_contract_message(
+                        job_id=str(row["job_id"]),
+                        missing_field="template_id",
+                    )
+                )
+    finally:
+        conn.close()
 
 
 def _canonicalize_job_name(name: str) -> str:
