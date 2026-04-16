@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,44 @@ def test_profile_store_backup_schedule_roundtrip(tmp_path: Path) -> None:
     assert loaded.start_time_local == "06:45"
     assert loaded.weekdays == ("MON", "WED")
     assert loaded.compression == "zip"
+
+
+def test_profile_store_persists_trigger_and_legacy_schedule_data_in_separate_tables(
+    tmp_path: Path,
+) -> None:
+    store = open_profile_store(profile_name="default", data_root=tmp_path)
+    job_id = store.create_job("My Job")
+
+    store.save_backup_schedule(
+        BackupScheduleSpec(
+            job_id=job_id,
+            source_root="C:/games/world",
+            cadence="daily",
+            start_time_local="07:00",
+            weekdays=(),
+            compression="none",
+        )
+    )
+
+    database_path = tmp_path / "profiles" / "default" / "index" / "profiles.sqlite"
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        schedule_columns = {
+            str(column["name"]) for column in connection.execute("PRAGMA table_info(job_schedules)")
+        }
+        legacy_row = connection.execute(
+            "SELECT source_root, compression FROM scheduled_backup_legacy_inputs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert "source_root" not in schedule_columns
+    assert "compression" not in schedule_columns
+    assert legacy_row is not None
+    assert str(legacy_row["source_root"]) == "C:/games/world"
+    assert str(legacy_row["compression"]) == "none"
 
 
 def test_profile_store_delete_backup_schedule_is_idempotent(tmp_path: Path) -> None:

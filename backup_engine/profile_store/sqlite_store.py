@@ -103,6 +103,25 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS profile_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
     )
 
+    # Ensure the trigger-only schedule table and transitional compatibility
+    # table exist, even for databases created before the scheduling boundary
+    # was split.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS job_schedules ("
+        "job_id TEXT PRIMARY KEY, "
+        "cadence TEXT NOT NULL CHECK(cadence IN ('daily','weekly')), "
+        "start_time_local TEXT NOT NULL, "
+        "weekdays TEXT NULL, "
+        "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS scheduled_backup_legacy_inputs ("
+        "job_id TEXT PRIMARY KEY, "
+        "source_root TEXT NOT NULL, "
+        "compression TEXT NOT NULL DEFAULT 'none', "
+        "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)"
+    )
+
     # Ensure jobs has is_deleted column for soft deletion.
     cols = conn.execute("PRAGMA table_info(jobs)").fetchall()
     col_names = {str(r["name"]) for r in cols}
@@ -328,27 +347,47 @@ class SqliteProfileStore(ProfileStore):
             If the job or schedule is not present.
         """
         with self._connect() as conn:
+            _ensure_schema(conn)
             row = conn.execute(
-                "SELECT js.job_id, js.source_root, js.cadence, js.start_time_local, "
-                "js.weekdays, js.compression "
+                "SELECT js.job_id, js.cadence, js.start_time_local, js.weekdays, "
+                "legacy.source_root AS legacy_source_root, "
+                "legacy.compression AS legacy_compression "
                 "FROM job_schedules js "
                 "JOIN jobs j ON j.job_id = js.job_id "
+                "LEFT JOIN scheduled_backup_legacy_inputs legacy ON legacy.job_id = js.job_id "
                 "WHERE js.job_id = ? AND j.is_deleted = 0",
                 (job_id,),
             ).fetchone()
             if row is None:
                 raise UnknownJobError(f"No backup schedule found for job_id: {job_id}")
 
+            legacy_row = conn.execute("PRAGMA table_info(job_schedules)").fetchall()
+            legacy_columns = {str(column["name"]) for column in legacy_row}
+            fallback_row = None
+            if "source_root" in legacy_columns or "compression" in legacy_columns:
+                fallback_row = conn.execute(
+                    "SELECT source_root, compression FROM job_schedules WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+
         weekdays_raw = str(row["weekdays"]) if row["weekdays"] is not None else ""
         weekdays = tuple(part for part in weekdays_raw.split(",") if part)
+        source_root_value = row["legacy_source_root"]
+        compression_value = row["legacy_compression"]
+
+        if source_root_value is None and fallback_row is not None:
+            source_root_value = fallback_row["source_root"]
+        if compression_value is None and fallback_row is not None:
+            compression_value = fallback_row["compression"]
+
         return normalize_schedule_spec(
             BackupScheduleSpec(
                 job_id=str(row["job_id"]),
-                source_root=str(row["source_root"]),
+                source_root=str(source_root_value or ""),
                 cadence=str(row["cadence"]),
                 start_time_local=str(row["start_time_local"]),
                 weekdays=weekdays,
-                compression=str(row["compression"]),
+                compression=str(compression_value or ""),
             )
         )
 
@@ -379,20 +418,29 @@ class SqliteProfileStore(ProfileStore):
                 raise UnknownJobError(f"Unknown job_id: {normalized.job_id}")
 
             conn.execute(
-                "INSERT INTO job_schedules(job_id, source_root, cadence, start_time_local, weekdays, compression) "
-                "VALUES(?, ?, ?, ?, ?, ?) "
+                "INSERT INTO job_schedules(job_id, cadence, start_time_local, weekdays) "
+                "VALUES(?, ?, ?, ?) "
                 "ON CONFLICT(job_id) DO UPDATE SET "
-                "source_root = excluded.source_root, "
                 "cadence = excluded.cadence, "
                 "start_time_local = excluded.start_time_local, "
-                "weekdays = excluded.weekdays, "
+                "weekdays = excluded.weekdays",
+                (
+                    normalized.job_id,
+                    normalized.cadence,
+                    normalized.start_time_local,
+                    ",".join(normalized.weekdays) if normalized.weekdays else None,
+                ),
+            )
+
+            conn.execute(
+                "INSERT INTO scheduled_backup_legacy_inputs(job_id, source_root, compression) "
+                "VALUES(?, ?, ?) "
+                "ON CONFLICT(job_id) DO UPDATE SET "
+                "source_root = excluded.source_root, "
                 "compression = excluded.compression",
                 (
                     normalized.job_id,
                     normalized.source_root,
-                    normalized.cadence,
-                    normalized.start_time_local,
-                    ",".join(normalized.weekdays) if normalized.weekdays else None,
                     normalized.compression,
                 ),
             )
@@ -407,6 +455,8 @@ class SqliteProfileStore(ProfileStore):
             Identifier of the job whose schedule should be removed.
         """
         with self._connect() as conn:
+            _ensure_schema(conn)
+            conn.execute("DELETE FROM scheduled_backup_legacy_inputs WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM job_schedules WHERE job_id = ?", (job_id,))
 
 
