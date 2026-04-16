@@ -152,14 +152,46 @@ class BackupWorker(QObject):
     finished = Signal(object)  # BackupRunResult
     failed = Signal(str)
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        profile_name: str = "default",
+        data_root: Path | None = None,
+        default_compression: str = "none",
+    ) -> None:
+        """
+        Initialize the worker.
+
+        Parameters
+        ----------
+        profile_name : str, optional
+            Profile name used to resolve authoritative job-backed policy.
+        data_root : Path | None, optional
+            Optional data root override for the profile store and backup service.
+        default_compression : str, optional
+            GUI-level fallback compression used only when plan mode needs to
+            preserve legacy OZ0 behavior for jobs whose Template policy still
+            resolves to ``"none"`` in the active GUI context.
+        """
         super().__init__()
+        self._profile_name = profile_name
+        self._data_root = data_root
+        self._default_compression = default_compression
         self._job_id: str | None = None
         self._job_name: str | None = None
         self._source: Path | None = None
         self._mode: str = "plan"
 
-    def configure(self, job_id: str, job_name: str, source: Path, mode: str) -> None:
+    def configure(
+        self,
+        job_id: str,
+        job_name: str,
+        source: Path,
+        mode: str,
+        *,
+        data_root: Path | None,
+        default_compression: str,
+    ) -> None:
         """
         Configure parameters for the next backup execution.
 
@@ -171,6 +203,8 @@ class BackupWorker(QObject):
         self._job_name = job_name
         self._source = source
         self._mode = mode
+        self._data_root = data_root
+        self._default_compression = default_compression
 
     @Slot()
     def run(self) -> None:
@@ -184,41 +218,43 @@ class BackupWorker(QObject):
             mode = self._mode
 
             if mode == "plan":
+                compression = self._resolve_plan_compression(self._job_id)
                 result = run_backup(
-                    profile_name="default",
+                    profile_name=self._profile_name,
                     source=self._source,
                     dry_run=True,
-                    data_root=None,
+                    data_root=self._data_root,
                     write_plan=True,
                     job_id=self._job_id,
                     job_name=self._job_name,
+                    compression=compression,
                 )
             elif mode == "materialize":
                 result = run_backup(
-                    profile_name="default",
+                    profile_name=self._profile_name,
                     source=self._source,
                     dry_run=False,
-                    data_root=None,
+                    data_root=self._data_root,
                     execute=False,
                     job_id=self._job_id,
                     job_name=self._job_name,
                 )
             elif mode == "execute":
                 result = run_backup(
-                    profile_name="default",
+                    profile_name=self._profile_name,
                     source=self._source,
                     dry_run=False,
-                    data_root=None,
+                    data_root=self._data_root,
                     execute=True,
                     job_id=self._job_id,
                     job_name=self._job_name,
                 )
             elif mode == "execute+compress":
                 result = run_backup(
-                    profile_name="default",
+                    profile_name=self._profile_name,
                     source=self._source,
                     dry_run=False,
-                    data_root=None,
+                    data_root=self._data_root,
                     execute=True,
                     compress=True,
                     compression="zip",
@@ -232,6 +268,49 @@ class BackupWorker(QObject):
 
         except Exception as exc:
             self.failed.emit(str(exc))
+
+    def _load_template_compression(self, job_id: str) -> str:
+        """
+        Load the authoritative Template-owned compression policy for a job.
+
+        Parameters
+        ----------
+        job_id : str
+            Job identifier whose current Template compression should be applied.
+
+        Returns
+        -------
+        str
+            Compression mode currently configured for the job.
+        """
+        store = open_profile_store(profile_name=self._profile_name, data_root=self._data_root)
+        return store.load_template_compression(job_id)
+
+    def _resolve_plan_compression(self, job_id: str) -> str:
+        """
+        Resolve plan-mode compression for the active GUI context.
+
+        Parameters
+        ----------
+        job_id : str
+            Job identifier whose plan-mode compression should be resolved.
+
+        Returns
+        -------
+        str
+            Compression mode that should drive plan rendering.
+
+        Notes
+        -----
+        The Run tab is a user-facing planning surface and historically exposed a
+        GUI default compression control. The active GUI path must continue to
+        honor that OZ0 expectation when the current Template policy still
+        resolves to ``"none"`` in the selected GUI context.
+        """
+        compression = self._load_template_compression(job_id)
+        if compression != "none":
+            return compression
+        return self._default_compression
 
 
 class RunTab(QWidget):
@@ -252,10 +331,14 @@ class RunTab(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._settings = load_gui_settings(data_root=None)
         self._active_job_id: str | None = None
         self._current_job_binding: JobBinding | None = None
         self._pending_select_job_id: str | None = None
-        self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
+        self._store = ProfileStoreAdapter(
+            profile_name="default",
+            data_root=self._settings.data_root,
+        )
         self._store.jobs_loaded.connect(self._on_jobs_loaded)
         self._store.error.connect(self._on_store_error)
 
@@ -305,7 +388,6 @@ class RunTab(QWidget):
         run_mode_row.addWidget(self.mode_combo, 1)
         job_stack.addLayout(run_mode_row)
 
-        self._settings = load_gui_settings(data_root=None)
         self._apply_default_run_mode()
 
         self.btn_backup_now = QPushButton("Backup Now")
@@ -341,7 +423,11 @@ class RunTab(QWidget):
         self._last_result: BackupRunResult | None = None
 
         self._thread = QThread(self)
-        self._worker = BackupWorker()
+        self._worker = BackupWorker(
+            profile_name="default",
+            data_root=self._settings.data_root,
+            default_compression=self._settings.default_compression,
+        )
         self._worker.moveToThread(self._thread)
         self._worker.finished.connect(self._on_backup_finished)
         self._worker.failed.connect(self._on_backup_failed)
@@ -378,8 +464,21 @@ class RunTab(QWidget):
             return None
         return str(self.job_combo.currentData())
 
+    def _refresh_settings_context(self) -> None:
+        """
+        Reload the active GUI settings for runtime-sensitive Run tab actions.
+
+        Notes
+        -----
+        The Settings tab can change the default compression while the app is
+        already open. Run-tab actions must refresh that context so Plan Only and
+        other OZ0 flows do not keep using a stale legacy archive-root fallback.
+        """
+        self._settings = load_gui_settings(data_root=None)
+
     def _open_store(self):
-        return open_profile_store(profile_name="default", data_root=None)
+        self._refresh_settings_context()
+        return open_profile_store(profile_name="default", data_root=self._settings.data_root)
 
     def _refresh_job_binding(self, job_id: str | None) -> None:
         if job_id is None:
@@ -451,6 +550,8 @@ class RunTab(QWidget):
             QMessageBox.critical(self, "Profile Store Error", str(exc))
             return
 
+        self._refresh_settings_context()
+
         self.btn_backup_now.setEnabled(False)
         mode = str(self.mode_combo.currentData())
         action = {
@@ -463,7 +564,14 @@ class RunTab(QWidget):
         self.status_label.setText(f"{action}: {self.job_combo.currentText()} …")
         self.summary.setPlainText(f"{action} backup…")
 
-        self._worker.configure(binding.job_id, binding.job_name, source, mode)
+        self._worker.configure(
+            binding.job_id,
+            binding.job_name,
+            source,
+            mode,
+            data_root=self._settings.data_root,
+            default_compression=self._settings.default_compression,
+        )
         QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
 
     def _open_artifacts(self) -> None:

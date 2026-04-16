@@ -23,6 +23,13 @@ __all__ = [
 ]
 
 
+def _build_extract_root(destination_root: Path, stamp: str) -> Path:
+    """
+    Build a temporary extraction root outside the destination tree.
+    """
+    return destination_root.with_name(f"{destination_root.name}.wcbt_restore_extract") / stamp
+
+
 def _resolve_manifest_input(
     *,
     manifest_input: Path,
@@ -67,7 +74,7 @@ def _resolve_manifest_input(
     lower = manifest_path.name.lower()
     if lower.endswith(".zip") or lower.endswith(".tar.zst") or lower.endswith(".tarzst"):
         stamp = clock.now().astimezone(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
-        extract_root = destination_root / ".wcbt_restore" / "_extract" / stamp
+        extract_root = _build_extract_root(destination_root, stamp)
         extract_archive(archive_path=manifest_path, destination_dir=extract_root)
 
         # Expect exactly one top-level directory (run_id)
@@ -96,7 +103,7 @@ def _resolve_manifest_input(
                 archive_path = (manifest_path.parent / rel).resolve()
                 if archive_path.exists() and archive_path.is_file():
                     stamp = clock.now().astimezone(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
-                    extract_root = destination_root / ".wcbt_restore" / "_extract" / stamp
+                    extract_root = _build_extract_root(destination_root, stamp)
                     extract_archive(archive_path=archive_path, destination_dir=extract_root)
 
                     children = [c for c in extract_root.iterdir() if c.is_dir()]
@@ -104,12 +111,15 @@ def _resolve_manifest_input(
                         raise ValueError(
                             f"Expected archive to contain exactly one run directory; found {len(children)} at {extract_root}"
                         )
-                    manifest_path = children[0] / "manifest.json"
-                    if not manifest_path.is_file():
-                        raise ValueError(
-                            f"Extracted run directory missing manifest.json: {children[0]}"
-                        )
-                    return manifest_path, extract_root
+                    extracted_run_root = children[0]
+                    extracted_manifest_path = extracted_run_root / "manifest.json"
+                    if extracted_manifest_path.is_file():
+                        return extracted_manifest_path, extract_root
+
+                    extracted_payload = dict(payload)
+                    extracted_payload["archive_root"] = str(extracted_run_root)
+                    write_json_atomic(extracted_manifest_path, extracted_payload)
+                    return extracted_manifest_path, extract_root
 
         return manifest_path, None
 

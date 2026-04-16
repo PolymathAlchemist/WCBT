@@ -516,6 +516,10 @@ def _extract_destination_path(op: Mapping[str, Any], exec_result: Mapping[str, A
         if isinstance(value, str) and value:
             return value
 
+    relative_path = op.get("relative_path")
+    if isinstance(relative_path, str) and relative_path:
+        return relative_path
+
     return None
 
 

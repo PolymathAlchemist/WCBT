@@ -101,6 +101,7 @@ def execute_copy_plan(
     plan: BackupPlan,
     run_root: Path,
     reserved_paths: Iterable[Path],
+    required_artifact_paths: Iterable[Path] = (),
 ) -> BackupExecutionSummary:
     """
     Execute copy operations for a materialized backup run.
@@ -113,6 +114,10 @@ def execute_copy_plan(
         Materialized run directory (plan destinations are expected to be under this root).
     reserved_paths:
         Paths that must never be overwritten (e.g., plan.txt, manifest.json).
+    required_artifact_paths:
+        Paths that must already exist before execution begins. This allows callers
+        to enforce legacy run-artifact invariants while also supporting temporary
+        staging directories that contain only payload files.
 
     Returns
     -------
@@ -131,7 +136,10 @@ def execute_copy_plan(
     This function updates execution results in memory only. Persisted artifacts
     (for example, manifest.json updates) are written by the caller.
     """
-    _assert_materialized_run_invariants(run_root=run_root)
+    _assert_materialized_run_invariants(
+        run_root=run_root,
+        required_artifact_paths=required_artifact_paths,
+    )
 
     reserved_set = {p.resolve() for p in reserved_paths}
     run_root_resolved = run_root.resolve()
@@ -154,7 +162,11 @@ def execute_copy_plan(
     return BackupExecutionSummary(status="success", results=results)
 
 
-def _assert_materialized_run_invariants(*, run_root: Path) -> None:
+def _assert_materialized_run_invariants(
+    *,
+    run_root: Path,
+    required_artifact_paths: Iterable[Path],
+) -> None:
     """
     Ensure the run directory and required artifacts exist before copying.
 
@@ -168,13 +180,9 @@ def _assert_materialized_run_invariants(*, run_root: Path) -> None:
     if not run_root.is_dir():
         raise BackupInvariantViolationError(f"Run root is not a directory: {run_root}")
 
-    plan_path = run_root / "plan.txt"
-    manifest_path = run_root / "manifest.json"
-
-    if not plan_path.is_file():
-        raise BackupInvariantViolationError(f"Missing required artifact: {plan_path}")
-    if not manifest_path.is_file():
-        raise BackupInvariantViolationError(f"Missing required artifact: {manifest_path}")
+    for artifact_path in required_artifact_paths:
+        if not artifact_path.is_file():
+            raise BackupInvariantViolationError(f"Missing required artifact: {artifact_path}")
 
 
 def _execute_single_operation(

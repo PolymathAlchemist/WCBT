@@ -84,17 +84,37 @@ def test_template_compression_is_authoritative(tmp_path: Path) -> None:
     assert str(template_row["compression"]) == "zip"
 
 
-def test_create_job_initializes_binding_without_template_policy(tmp_path: Path) -> None:
+def test_create_job_initializes_binding_with_default_template_policy(tmp_path: Path) -> None:
     store = SqliteProfileStore(db_path=tmp_path / "profiles.sqlite")
 
     job_id = store.create_job("Example Job")
     binding = store.load_job_binding(job_id)
+    compression = store.load_template_compression(job_id)
 
     assert binding.job_id == job_id
     assert binding.job_name == "Example Job"
     assert binding.template_id
     assert binding.template_id != job_id
     assert binding.source_root == ""
+    assert compression == "none"
+
+
+def test_load_template_compression_backfills_missing_policy_row(tmp_path: Path) -> None:
+    store = SqliteProfileStore(db_path=tmp_path / "profiles.sqlite")
+    job_id = store.create_job("Example Job")
+    binding = store.load_job_binding(job_id)
+
+    connection = sqlite3.connect(tmp_path / "profiles.sqlite")
+    try:
+        connection.execute(
+            "DELETE FROM template_backup_policy WHERE template_id = ?",
+            (binding.template_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert store.load_template_compression(job_id) == "none"
 
 
 def test_save_job_binding_updates_name_template_and_source_root(tmp_path: Path) -> None:

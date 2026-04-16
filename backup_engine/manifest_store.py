@@ -58,7 +58,8 @@ class RunOperationResultV1:
     source_path:
         Absolute source path string.
     destination_path:
-        Absolute destination path string.
+        Absolute destination path string when the run has a stable on-disk
+        destination. Archive-based OZ0 runs may omit this transient detail.
     outcome:
         Outcome string (stable external contract).
     message:
@@ -69,21 +70,23 @@ class RunOperationResultV1:
     operation_type: str
     relative_path: str
     source_path: str
-    destination_path: str
+    destination_path: str | None
     outcome: str
     message: str
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a JSON-serializable payload."""
-        return {
+        payload = {
             "operation_index": self.operation_index,
             "operation_type": self.operation_type,
             "relative_path": self.relative_path,
             "source_path": self.source_path,
-            "destination_path": self.destination_path,
             "outcome": self.outcome,
             "message": self.message,
         }
+        if self.destination_path is not None:
+            payload["destination_path"] = self.destination_path
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,7 +276,11 @@ class BackupRunManifestV2:
                         operation_type=str(item["operation_type"]),
                         relative_path=str(item["relative_path"]),
                         source_path=str(item["source_path"]),
-                        destination_path=str(item["destination_path"]),
+                        destination_path=(
+                            str(item["destination_path"])
+                            if item.get("destination_path") is not None
+                            else None
+                        ),
                         outcome=str(item["outcome"]),
                         message=str(item["message"]),
                     )
@@ -606,9 +613,13 @@ def list_backup_runs(
         return []
 
     candidates: list[tuple[float, Path]] = []
+    seen_paths: set[Path] = set()
     try:
-        for mp in root.rglob("manifest.json"):
-            if mp.is_file():
+        for pattern in ("manifest.json", "*.manifest.json"):
+            for mp in root.rglob(pattern):
+                if not mp.is_file() or mp in seen_paths:
+                    continue
+                seen_paths.add(mp)
                 try:
                     candidates.append((mp.stat().st_mtime, mp))
                 except OSError:

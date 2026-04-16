@@ -295,6 +295,37 @@ def _load_job_source_root(conn: sqlite3.Connection, job_id: JobId) -> str:
     return str(source_root_raw) if source_root_raw is not None else ""
 
 
+def _ensure_template_backup_policy_row(
+    conn: sqlite3.Connection,
+    *,
+    template_id: str,
+) -> None:
+    """
+    Ensure a Template-owned compression policy row exists.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open profile store connection.
+    template_id : str
+        Template identifier that must have a policy row.
+
+    Notes
+    -----
+    Older or partially initialized local profiles can contain valid Job ->
+    Template bindings before the companion ``template_backup_policy`` row was
+    written. The authoritative Template policy default remains ``"none"``, so
+    inserting that row preserves the current model while allowing later lookups
+    to succeed deterministically.
+    """
+    conn.execute(
+        "INSERT INTO template_backup_policy(template_id, compression) "
+        "VALUES(?, 'none') "
+        "ON CONFLICT(template_id) DO NOTHING",
+        (template_id,),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SqliteProfileStore(ProfileStore):
     """
@@ -365,6 +396,7 @@ class SqliteProfileStore(ProfileStore):
             )
             if cur.rowcount == 0:
                 raise UnknownJobError(f"Unknown job_id: {binding.job_id}")
+            _ensure_template_backup_policy_row(conn, template_id=template_id)
 
     def load_restore_defaults(self, job_id: JobId) -> tuple[str | None, str | None]:
         """
@@ -420,6 +452,7 @@ class SqliteProfileStore(ProfileStore):
         with self._connect() as conn:
             profile_id = _get_or_create_profile_id(conn)
             job_id: JobId = uuid.uuid5(JOB_ID_NAMESPACE, f"{profile_id}:{canonical}").hex
+            template_id = _new_template_id()
 
             # Insert new job, or revive if previously soft-deleted.
             conn.execute(
@@ -428,13 +461,15 @@ class SqliteProfileStore(ProfileStore):
                 "ON CONFLICT(job_id) DO UPDATE SET "
                 "name = excluded.name, "
                 "is_deleted = 0",
-                (job_id, name, _new_template_id()),
+                (job_id, name, template_id),
             )
             conn.execute(
                 "UPDATE jobs SET source_root = COALESCE(source_root, '') "
                 "WHERE job_id = ? AND is_deleted = 0",
                 (job_id,),
             )
+            current_template_id = _load_template_id(conn, job_id)
+            _ensure_template_backup_policy_row(conn, template_id=current_template_id)
         return job_id
 
     def rename_job(self, job_id: JobId, new_name: str) -> None:
@@ -530,6 +565,7 @@ class SqliteProfileStore(ProfileStore):
                 raise UnknownJobError(f"Unknown job_id: {job_id}")
 
             template_id = _load_template_id(conn, job_id)
+            _ensure_template_backup_policy_row(conn, template_id=template_id)
             row = conn.execute(
                 "SELECT compression FROM template_backup_policy WHERE template_id = ?",
                 (template_id,),

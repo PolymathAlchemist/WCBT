@@ -24,6 +24,8 @@ Safety posture (v1)
 from __future__ import annotations
 
 import os
+import re
+import shutil
 from dataclasses import dataclass
 from datetime import timezone
 from pathlib import Path
@@ -69,7 +71,9 @@ class BackupRunContext:
 
     profile_name: str
     source_root: Path
-    archive_root: Path
+    artifact_root: Path
+    staging_dir: Path | None = None
+    root_label: str = "Archive root"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +91,9 @@ class BackupRunResult:
     plan_text_path: Path | None
     manifest_path: Path | None
     executed: bool
+
+
+_INVALID_FILENAME_CHARACTERS = re.compile(r'[\\/:*?"<>|]+')
 
 
 def run_backup(
@@ -182,8 +189,37 @@ def run_backup(
     paths = resolve_profile_paths(profile_name, data_root=data_root)
     source_root = validate_source_path(source)
 
-    archive_id = _format_archive_id(run_clock)
-    archive_root = paths.archives_root / archive_id
+    run_token = _resolve_run_token(run_clock)
+    compression_requested = compress or (compression != "none")
+    oz0_root = _resolve_oz0_artifact_root(source_root)
+    archive_root = oz0_root if dry_run else paths.archives_root / run_token
+    if compression_requested:
+        artifact_job_name = _resolve_artifact_job_name(
+            job_name=job_name,
+            job_id=job_id,
+            source_root=source_root,
+        )
+        archive_root = (
+            _build_staging_root(
+                work_root=paths.work_root,
+                artifact_job_name=artifact_job_name,
+                run_token=run_token,
+            )
+            if not dry_run
+            else oz0_root
+        )
+        manifest_output_path = oz0_root / _build_manifest_filename(
+            artifact_job_name=artifact_job_name,
+            run_token=run_token,
+        )
+        archive_output_path = oz0_root / _build_archive_filename(
+            artifact_job_name=artifact_job_name,
+            run_token=run_token,
+        )
+    else:
+        artifact_job_name = None
+        manifest_output_path = None
+        archive_output_path = None
 
     scan_rules = _build_scan_rules(
         excluded_directory_names=excluded_directory_names,
@@ -198,7 +234,9 @@ def run_backup(
     context = BackupRunContext(
         profile_name=profile_name,
         source_root=source_root,
-        archive_root=archive_root,
+        artifact_root=oz0_root if dry_run or compression_requested else archive_root,
+        staging_dir=archive_root if compression_requested and not dry_run else None,
+        root_label="Artifact root" if compression_requested else "Archive root",
     )
 
     report_text = _build_backup_report_text(context, plan_with_issues, max_items=max_items)
@@ -207,7 +245,7 @@ def run_backup(
     if dry_run:
         plan_text_path: Path | None = None
         if write_plan or plan_path is not None:
-            output_path = plan_path or (archive_root / "plan.txt")
+            output_path = plan_path or (context.artifact_root / "plan.txt")
             _write_plan_artifact(
                 output_path=output_path,
                 content=report_text,
@@ -218,10 +256,10 @@ def run_backup(
             print(f"Plan written: {output_path}")
 
         return BackupRunResult(
-            run_id=archive_id,
+            run_id=run_token,
             profile_name=profile_name,
             source_root=source_root,
-            archive_root=archive_root,
+            archive_root=context.artifact_root,
             dry_run=True,
             report_text=report_text,
             plan_text_path=plan_text_path,
@@ -234,14 +272,44 @@ def run_backup(
         lock_path=lock_path,
         profile_name=profile_name,
         command="backup",
-        run_id=archive_id,
+        run_id=run_token,
         force=force,
         break_lock=break_lock,
     ):
+        if compression_requested:
+            assert oz0_root is not None
+            assert manifest_output_path is not None
+            assert archive_output_path is not None
+            _, manifest_path = _run_compressed_backup(
+                plan=plan_with_issues,
+                run_root=archive_root,
+                run_token=run_token,
+                oz0_root=oz0_root,
+                manifest_output_path=manifest_output_path,
+                archive_output_path=archive_output_path,
+                profile_name=profile_name,
+                source_root=source_root,
+                job_id=job_id,
+                job_name=job_name,
+                clock=run_clock,
+            )
+
+            return BackupRunResult(
+                run_id=run_token,
+                profile_name=profile_name,
+                source_root=source_root,
+                archive_root=oz0_root,
+                dry_run=False,
+                report_text=report_text,
+                plan_text_path=None,
+                manifest_path=manifest_path,
+                executed=True,
+            )
+
         materialized = materialize_backup_run(
             plan=plan_with_issues,
             run_root=archive_root,
-            run_id=archive_id,
+            run_id=run_token,
             plan_text=report_text,
             profile_name=profile_name,
             source_root=source_root,
@@ -258,7 +326,7 @@ def run_backup(
 
         if not execute:
             return BackupRunResult(
-                run_id=archive_id,
+                run_id=run_token,
                 profile_name=profile_name,
                 source_root=source_root,
                 archive_root=archive_root,
@@ -273,6 +341,7 @@ def run_backup(
             plan=plan_with_issues,
             run_root=materialized.run_root,
             reserved_paths=(materialized.plan_text_path, materialized.manifest_path),
+            required_artifact_paths=(materialized.plan_text_path, materialized.manifest_path),
         )
 
         compressed_path: Path | None = None
@@ -351,7 +420,7 @@ def run_backup(
             )
 
         return BackupRunResult(
-            run_id=archive_id,
+            run_id=run_token,
             profile_name=profile_name,
             source_root=source_root,
             archive_root=archive_root,
@@ -363,11 +432,209 @@ def run_backup(
         )
 
 
+def _run_compressed_backup(
+    *,
+    plan: BackupPlan,
+    run_root: Path,
+    run_token: str,
+    oz0_root: Path,
+    manifest_output_path: Path,
+    archive_output_path: Path,
+    profile_name: str,
+    source_root: Path,
+    job_id: str | None,
+    job_name: str | None,
+    clock: Clock,
+) -> tuple[BackupRunArchiveV1, Path | None]:
+    """
+    Execute a backup into temporary staging, then emit paired OZ0 artifacts.
+
+    Parameters
+    ----------
+    plan:
+        Backup plan whose destinations already point at ``run_root``.
+    run_root:
+        Temporary staging directory used only for payload files.
+    run_token:
+        Shared token for the archive and manifest filenames.
+    oz0_root:
+        Final directory that receives the archive and manifest outputs.
+    manifest_output_path:
+        Final manifest path in ``oz0_root``.
+    archive_output_path:
+        Final archive path in ``oz0_root``.
+    profile_name:
+        Owning profile name.
+    source_root:
+        Source root for the run.
+    job_id:
+        Optional job identifier.
+    job_name:
+        Optional human-readable job name.
+    clock:
+        Clock used to stamp the manifest.
+
+    Returns
+    -------
+    tuple[BackupRunArchiveV1, Path | None]
+        Archive metadata and the written manifest path (or ``None`` when manifest
+        persistence failed after the archive was created).
+
+    Raises
+    ------
+    BackupExecutionError
+        If file staging or archive creation fails.
+    """
+    try:
+        run_root.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise BackupExecutionError(f"Staging directory already exists: {run_root}") from exc
+    except OSError as exc:
+        raise BackupExecutionError(f"Failed to create staging directory: {run_root}") from exc
+
+    summary = execute_copy_plan(
+        plan=plan,
+        run_root=run_root,
+        reserved_paths=(),
+        required_artifact_paths=(),
+    )
+
+    if summary.status != "success":
+        raise BackupExecutionError("Copy execution failed before archive creation.")
+
+    archive_meta = _create_run_archive(
+        run_root=run_root,
+        archive_output_path=archive_output_path,
+    )
+
+    manifest = _build_run_manifest(
+        plan=plan,
+        run_token=run_token,
+        profile_name=profile_name,
+        source_root=source_root,
+        archive_root=oz0_root,
+        manifest_output_path=manifest_output_path,
+        job_id=job_id,
+        job_name=job_name,
+        clock=clock,
+        execution_summary=summary,
+        archive=archive_meta,
+    )
+
+    manifest_path: Path | None = None
+    try:
+        write_run_manifest_atomic(manifest_output_path, manifest)
+        manifest_path = manifest_output_path
+        print(f"  Manifest      : {manifest_output_path}")
+    except Exception as exc:  # noqa: BLE001
+        print()
+        print(f"ERROR: Failed to write manifest artifact: {manifest_output_path} ({exc!s})")
+
+    try:
+        shutil.rmtree(run_root)
+    except OSError as exc:
+        print()
+        print(f"WARNING: Failed to delete staging directory: {run_root} ({exc!s})")
+
+    print()
+    print("Copy execution complete:")
+    print(f"  Status        : {summary.status}")
+    copied_count = sum(1 for r in summary.results if r.outcome.value == "copied")
+    print(f"  Copied        : {copied_count}")
+    print(f"  Archive       : {archive_output_path}")
+
+    return archive_meta, manifest_path
+
+
+def _create_run_archive(
+    *,
+    run_root: Path,
+    archive_output_path: Path,
+) -> BackupRunArchiveV1:
+    """
+    Create the final archive artifact for a compressed backup run.
+
+    Notes
+    -----
+    OZ0 artifact routing uses a fixed ``.OZ0.zip`` contract. The legacy
+    compression knobs still decide whether we enter the archive-emission path,
+    but the final OZ0 payload is always a zip archive so the filename contract
+    remains stable.
+    """
+    from backup_engine.compression import CompressionFormat, compress_run_directory
+
+    try:
+        compressed_path = compress_run_directory(
+            run_root=run_root,
+            output_path=archive_output_path,
+            format=CompressionFormat.ZIP,
+        ).archive_path
+    except Exception as exc:  # noqa: BLE001
+        raise BackupExecutionError(
+            f"Failed to create archive artifact: {archive_output_path}"
+        ) from exc
+
+    sha256 = compute_file_sha256_hex(compressed_path)
+    size_bytes = compressed_path.stat().st_size
+
+    return BackupRunArchiveV1(
+        format=str(CompressionFormat.ZIP.value),
+        relative_path=compressed_path.name,
+        size_bytes=int(size_bytes),
+        sha256=str(sha256),
+    )
+
+
+def _build_run_manifest(
+    *,
+    plan: BackupPlan,
+    run_token: str,
+    profile_name: str,
+    source_root: Path,
+    archive_root: Path,
+    manifest_output_path: Path,
+    job_id: str | None,
+    job_name: str | None,
+    clock: Clock,
+    execution_summary: BackupExecutionSummary,
+    archive: BackupRunArchiveV1 | None,
+) -> BackupRunManifestV2:
+    """
+    Build an in-memory run manifest for final artifact persistence.
+    """
+    created_at_utc = clock.now().astimezone(timezone.utc)
+    operations_payload = _serialize_manifest_operations_without_destination_paths(plan)
+    scan_issues_payload = _serialize_scan_issues_for_manifest(plan)
+
+    base_manifest = BackupRunManifestV2(
+        schema_version=BackupRunManifestV2.SCHEMA_VERSION,
+        run_id=run_token,
+        created_at_utc=created_at_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        archive_root=str(archive_root),
+        plan_text_path=str(manifest_output_path.with_suffix(".plan.txt")),
+        profile_name=profile_name,
+        source_root=str(source_root),
+        job_id=job_id,
+        job_name=job_name,
+        operations=list(operations_payload),
+        scan_issues=list(scan_issues_payload),
+        execution=None,
+        archive=None,
+    )
+    return _build_executed_run_manifest(
+        base_manifest=base_manifest,
+        execution_summary=execution_summary,
+        archive=archive,
+        include_destination_paths=False,
+    )
+
+
 def _build_executed_run_manifest(
     *,
     base_manifest: BackupRunManifestV2,
     execution_summary: BackupExecutionSummary,
     archive: BackupRunArchiveV1 | None,
+    include_destination_paths: bool = True,
 ) -> BackupRunManifestV2:
     """
     Create a new run manifest including execution results.
@@ -392,7 +659,7 @@ def _build_executed_run_manifest(
                 operation_type=r.operation_type,
                 relative_path=r.relative_path,
                 source_path=r.source_path,
-                destination_path=r.destination_path,
+                destination_path=r.destination_path if include_destination_paths else None,
                 outcome=r.outcome.value,
                 message=r.message,
             )
@@ -442,6 +709,70 @@ def _format_archive_id(clock: Clock) -> str:
     return utc_time.strftime("%Y%m%d_%H%M%SZ")
 
 
+def _resolve_run_token(clock: Clock) -> str:
+    """
+    Return the shared token used for all artifacts produced by one run.
+
+    Notes
+    -----
+    WCBT does not currently expose a separate persisted run-sequence source, so
+    the timestamp token remains the fallback and primary token generator.
+    """
+    return _format_archive_id(clock)
+
+
+def _resolve_artifact_job_name(
+    *, job_name: str | None, job_id: str | None, source_root: Path
+) -> str:
+    """
+    Choose a filesystem-safe name for job-owned artifact filenames.
+    """
+    for candidate in (job_name, job_id, source_root.name):
+        if candidate is None:
+            continue
+        sanitized = _sanitize_artifact_name(candidate)
+        if sanitized:
+            return sanitized
+    return "job"
+
+
+def _sanitize_artifact_name(value: str) -> str:
+    """
+    Sanitize a user-facing artifact name for safe Windows filenames.
+    """
+    collapsed = " ".join(value.split()).strip().rstrip(". ")
+    sanitized = _INVALID_FILENAME_CHARACTERS.sub("_", collapsed)
+    return sanitized.strip()
+
+
+def _build_staging_root(*, work_root: Path, artifact_job_name: str, run_token: str) -> Path:
+    """
+    Build the temporary staging directory path for a compressed backup run.
+    """
+    return work_root / "oz0_staging" / f"{artifact_job_name}.{run_token}"
+
+
+def _resolve_oz0_artifact_root(source_root: Path) -> Path:
+    """
+    Return the final OZ0 artifact directory derived from the backup target.
+    """
+    return source_root.parent / "OZ0"
+
+
+def _build_manifest_filename(*, artifact_job_name: str, run_token: str) -> str:
+    """
+    Return the final manifest filename for a run.
+    """
+    return f"{artifact_job_name}.{run_token}.manifest.json"
+
+
+def _build_archive_filename(*, artifact_job_name: str, run_token: str) -> str:
+    """
+    Return the default archive filename for a run.
+    """
+    return f"{artifact_job_name}.{run_token}.OZ0.zip"
+
+
 def _build_backup_report_text(
     context: BackupRunContext,
     plan: BackupPlan,
@@ -452,10 +783,56 @@ def _build_backup_report_text(
     lines: list[str] = []
     lines.append(f"Profile     : {context.profile_name}")
     lines.append(f"Source root : {context.source_root}")
-    lines.append(f"Archive root: {context.archive_root}")
+    if context.staging_dir is not None:
+        lines.append(f"Staging dir : {context.staging_dir}")
+        lines.append(f"Artifact root: {context.artifact_root}")
+    else:
+        lines.append(f"{context.root_label}: {context.artifact_root}")
     lines.append("")
-    lines.append(render_backup_plan_text(plan, max_items=max_items))
+    lines.append(
+        render_backup_plan_text(
+            plan,
+            max_items=max_items,
+            root_label="Staging dir" if context.staging_dir is not None else context.root_label,
+        )
+    )
     return "\n".join(lines)
+
+
+def _serialize_manifest_operations_without_destination_paths(
+    plan: BackupPlan,
+) -> list[dict[str, object]]:
+    """
+    Serialize manifest operations without leaking transient staging filesystem paths.
+    """
+    operations_payload: list[dict[str, object]] = []
+    for operation in plan.operations:
+        operations_payload.append(
+            {
+                "operation_type": operation.operation_type.value,
+                "source_path": str(operation.source_path),
+                "relative_path": str(operation.relative_path),
+                "reason": operation.reason,
+            }
+        )
+    return operations_payload
+
+
+def _serialize_scan_issues_for_manifest(plan: BackupPlan) -> list[dict[str, object]]:
+    """
+    Serialize scan issues for inclusion in a run manifest.
+    """
+    payloads: list[dict[str, object]] = []
+    for issue in plan.scan_issues:
+        payload: dict[str, object] = {
+            "message": str(getattr(issue, "message", "")),
+            "issue_type": str(getattr(issue, "issue_type", "")),
+        }
+        issue_path = getattr(issue, "path", None)
+        if issue_path is not None:
+            payload["path"] = str(issue_path)
+        payloads.append(payload)
+    return payloads
 
 
 def _write_plan_artifact(*, output_path: Path, content: str, overwrite: bool) -> None:

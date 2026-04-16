@@ -87,3 +87,25 @@ def test_list_backup_runs_respects_limit(tmp_path: Path) -> None:
 
     runs = list_backup_runs(archive_root, limit=2)
     assert len(runs) == 2
+
+
+def test_list_backup_runs_discovers_oz0_named_manifests(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    manifest_path = archive_root / "OZ0" / "photos.000123.manifest.json"
+
+    _write_manifest(
+        manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "000123",
+            "created_at_utc": "2026-01-03T00:00:00+00:00",
+            "archive_root": str(archive_root / "OZ0"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+        },
+    )
+
+    runs = list_backup_runs(archive_root, limit=10)
+
+    assert len(runs) == 1
+    assert runs[0].manifest_path == manifest_path

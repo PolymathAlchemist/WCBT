@@ -14,7 +14,12 @@ _OPERATION_ORDER: tuple[PlannedOperationType, ...] = (
 )
 
 
-def render_backup_plan_text(plan: BackupPlan, *, max_items: int) -> str:
+def render_backup_plan_text(
+    plan: BackupPlan,
+    *,
+    max_items: int,
+    root_label: str = "Archive root",
+) -> str:
     """
     Render a backup plan as deterministic plain text.
 
@@ -41,7 +46,7 @@ def render_backup_plan_text(plan: BackupPlan, *, max_items: int) -> str:
 
     lines: list[str] = []
     lines.append("Backup plan")
-    lines.append(f"Archive root: {plan.archive_root}")
+    lines.append(f"{root_label}: {plan.archive_root}")
     lines.append("")
 
     counts = _count_operations(plan)
