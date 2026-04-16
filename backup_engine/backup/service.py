@@ -53,6 +53,7 @@ from backup_engine.manifest_store import (
     RunOperationResultV1,
     write_run_manifest_atomic,
 )
+from backup_engine.oz0_paths import resolve_oz0_artifact_root
 from backup_engine.paths_and_safety import resolve_profile_paths, validate_source_path
 from backup_engine.profile_lock import acquire_profile_lock, build_profile_lock_path
 
@@ -191,7 +192,7 @@ def run_backup(
 
     run_token = _resolve_run_token(run_clock)
     compression_requested = compress or (compression != "none")
-    oz0_root = _resolve_oz0_artifact_root(source_root)
+    oz0_root = resolve_oz0_artifact_root(source_root)
     archive_root = oz0_root if dry_run else paths.archives_root / run_token
     if compression_requested:
         artifact_job_name = _resolve_artifact_job_name(
@@ -750,13 +751,6 @@ def _build_staging_root(*, work_root: Path, artifact_job_name: str, run_token: s
     Build the temporary staging directory path for a compressed backup run.
     """
     return work_root / "oz0_staging" / f"{artifact_job_name}.{run_token}"
-
-
-def _resolve_oz0_artifact_root(source_root: Path) -> Path:
-    """
-    Return the final OZ0 artifact directory derived from the backup target.
-    """
-    return source_root.parent / "OZ0"
 
 
 def _build_manifest_filename(*, artifact_job_name: str, run_token: str) -> str:
