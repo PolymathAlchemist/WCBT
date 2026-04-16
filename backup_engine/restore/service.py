@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from backup_engine.backup.service import BackupRunResult, run_backup
 from backup_engine.manifest_store import read_manifest_json, write_json_atomic
+from backup_engine.profile_store.sqlite_store import open_profile_store
 
 from .data_models import RestoreIntent
 from .errors import RestoreArtifactError, RestoreConflictError, RestoreManifestError
@@ -120,6 +122,12 @@ def _resolve_manifest_input(
                     extracted_payload["archive_root"] = str(extracted_run_root)
                     write_json_atomic(extracted_manifest_path, extracted_payload)
                     return extracted_manifest_path, extract_root
+
+                raise RestoreManifestError(
+                    "Manifest references archive metadata, but the archive could not be found. "
+                    f"manifest={manifest_path} archive={archive_path}. "
+                    "Restore cannot proceed from this manifest without the archive."
+                )
 
         return manifest_path, None
 
@@ -282,6 +290,158 @@ class SystemClock(Clock):
 
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
+
+
+def _resolve_pre_restore_backup_job(
+    *,
+    profile_name: str,
+    data_root: Path | None,
+    destination_root: Path,
+    manifest_job_id: str | None,
+) -> tuple[str | None, str | None, str]:
+    """
+    Resolve the current live job definition for a pre-restore backup when possible.
+
+    Parameters
+    ----------
+    profile_name:
+        Profile that should own the pre-restore backup.
+    data_root:
+        Optional data root for the profile store.
+    destination_root:
+        Live restore destination that may match a current job binding.
+    manifest_job_id:
+        Historical job identifier from the restore manifest, if present.
+
+    Returns
+    -------
+    tuple[str | None, str | None, str]
+        ``(job_id, job_name, compression)`` for the current live job when found.
+
+    Notes
+    -----
+    The restore manifest remains historical input. Pre-restore backup must prefer
+    the current live job binding that currently owns ``destination_root``.
+    """
+    destination_resolved = destination_root.resolve()
+    store = open_profile_store(profile_name=profile_name, data_root=data_root)
+
+    fallback_match: tuple[str, str, str] | None = None
+    for summary in store.list_jobs():
+        binding = store.load_job_binding(summary.job_id)
+        if not binding.source_root.strip():
+            continue
+
+        try:
+            binding_root = Path(binding.source_root).expanduser().resolve()
+        except OSError:
+            continue
+
+        if binding_root != destination_resolved:
+            continue
+
+        compression = store.load_template_compression(binding.job_id)
+        resolved_match = (binding.job_id, binding.job_name, compression)
+        if manifest_job_id is not None and binding.job_id == manifest_job_id:
+            return resolved_match
+        if fallback_match is None:
+            fallback_match = resolved_match
+
+    if fallback_match is not None:
+        return fallback_match
+
+    return None, None, "zip"
+
+
+def _run_pre_restore_backup(
+    *,
+    run_payload: Mapping[str, Any],
+    destination_root: Path,
+    data_root: Path | None,
+    clock: Clock,
+    journal: RestoreExecutionJournal,
+) -> BackupRunResult | None:
+    """
+    Execute a pre-restore backup of the current live destination when applicable.
+
+    Parameters
+    ----------
+    run_payload:
+        Parsed restore manifest payload.
+    destination_root:
+        Current live restore destination.
+    data_root:
+        Optional data root for backup/profile-store resolution.
+    clock:
+        Clock shared with the restore run for deterministic testing.
+    journal:
+        Restore execution journal used for audit events.
+
+    Returns
+    -------
+    BackupRunResult | None
+        Backup result when a live destination was protected, otherwise ``None``.
+    """
+    if not destination_root.exists() or not destination_root.is_dir():
+        journal.append(
+            "pre_restore_backup_skipped",
+            {
+                "reason": "destination_missing",
+                "destination_root": str(destination_root),
+            },
+        )
+        return None
+
+    profile_name_raw = run_payload.get("profile_name")
+    profile_name = str(profile_name_raw).strip() if profile_name_raw is not None else ""
+    if not profile_name:
+        profile_name = "default"
+
+    manifest_job_id = run_payload.get("job_id")
+    job_id = str(manifest_job_id) if isinstance(manifest_job_id, str) and manifest_job_id else None
+
+    resolved_job_id, resolved_job_name, compression = _resolve_pre_restore_backup_job(
+        profile_name=profile_name,
+        data_root=data_root,
+        destination_root=destination_root,
+        manifest_job_id=job_id,
+    )
+
+    journal.append(
+        "pre_restore_backup_started",
+        {
+            "initiated_by": "restore",
+            "destination_root": str(destination_root),
+            "job_id": resolved_job_id,
+            "job_name": resolved_job_name,
+            "compression": compression,
+        },
+    )
+
+    result = run_backup(
+        profile_name=profile_name,
+        source=destination_root,
+        dry_run=False,
+        data_root=data_root,
+        execute=True,
+        compression=compression,
+        job_id=resolved_job_id,
+        job_name=resolved_job_name if resolved_job_name is not None else destination_root.name,
+        clock=clock,
+    )
+
+    journal.append(
+        "pre_restore_backup_completed",
+        {
+            "initiated_by": "restore",
+            "backup_run_id": result.run_id,
+            "archive_root": str(result.archive_root),
+            "manifest_path": str(result.manifest_path)
+            if result.manifest_path is not None
+            else None,
+        },
+    )
+    return result
 
 
 def run_restore(
@@ -510,6 +670,15 @@ def run_restore(
     )
 
     try:
+        if not dry_run:
+            _run_pre_restore_backup(
+                run_payload=run_payload,
+                destination_root=destination_root,
+                data_root=data_root,
+                clock=clock_to_use,
+                journal=journal,
+            )
+
         stage_result = build_restore_stage(
             candidates=candidates,
             stage_root=stage_root,
