@@ -22,6 +22,18 @@ CREATE TABLE IF NOT EXISTS jobs (
     is_deleted INTEGER NOT NULL DEFAULT 0
 );
 
+-- Authoritative Template-owned selection rules.
+CREATE TABLE IF NOT EXISTS template_selection_rules (
+    template_id TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK(kind IN ('include','exclude')),
+    pattern     TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    PRIMARY KEY (template_id, kind, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_template_selection_rules_kind
+ON template_selection_rules(template_id, kind);
+
 -- Transitional Job-shaped carrier for Template-owned selection rules.
 CREATE TABLE IF NOT EXISTS rules (
     job_id   TEXT NOT NULL,

@@ -242,6 +242,65 @@ class ProfileStore(Protocol):
         """
         raise NotImplementedError
 
+    def load_template_selection_rules(self, job_id: JobId) -> TemplateSelectionRules:
+        """
+        Load the authoritative Template-owned selection rules for a job.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job whose current bound Template policy should be
+            loaded.
+
+        Returns
+        -------
+        TemplateSelectionRules
+            Template-authoritative include/exclude policy for the current job.
+
+        Raises
+        ------
+        UnknownJobError
+            If job_id is not present in the store.
+
+        Notes
+        -----
+        The current routing key is still discovered from the Job path during the
+        transition, but the returned selection rules are Template-owned policy,
+        not Job-owned meaning.
+        """
+        raise NotImplementedError
+
+    def save_template_selection_rules(
+        self,
+        job_id: JobId,
+        name: str,
+        selection_rules: TemplateSelectionRules,
+    ) -> None:
+        """
+        Persist authoritative Template-owned selection rules for a job.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job whose current bound Template policy should be
+            updated.
+        name:
+            Display name to store for job listing.
+        selection_rules:
+            Template-authoritative include/exclude policy to persist.
+
+        Raises
+        ------
+        InvalidRuleError
+            If any pattern violates invariants.
+
+        Notes
+        -----
+        Implementations may continue updating Job-shaped compatibility mirrors,
+        but those mirrors must not become co-equal owners.
+        """
+        raise NotImplementedError
+
     def load_backup_schedule(self, job_id: JobId) -> BackupScheduleSpec:
         """
         Load the persisted scheduled-task record for a job.

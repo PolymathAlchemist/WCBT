@@ -26,11 +26,12 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from backup_engine.scheduling.models import BackupScheduleSpec, normalize_schedule_spec
+from backup_engine.template_policy import TemplateSelectionRules
 
 from ..paths_and_safety import ProfilePaths, ensure_profile_directories, resolve_profile_paths
 from .api import JobBackupDefaults, JobId, JobSummary, ProfileStore, RuleSet
 from .errors import InvalidRuleError, UnknownJobError
-from .rules import normalize_rules
+from .rules import normalize_rules, normalize_template_selection_rules
 from .schema import SCHEMA_V1
 
 # Stable UUID namespace for JobId derivation.
@@ -114,6 +115,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # table exist, even for databases created before the scheduling boundary
     # was split.
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS template_selection_rules ("
+        "template_id TEXT NOT NULL, "
+        "kind TEXT NOT NULL CHECK(kind IN ('include','exclude')), "
+        "pattern TEXT NOT NULL, "
+        "position INTEGER NOT NULL, "
+        "PRIMARY KEY (template_id, kind, position))"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_template_selection_rules_kind "
+        "ON template_selection_rules(template_id, kind)"
+    )
+    conn.execute(
         "CREATE TABLE IF NOT EXISTS job_schedules ("
         "job_id TEXT PRIMARY KEY, "
         "cadence TEXT NOT NULL CHECK(cadence IN ('daily','weekly')), "
@@ -166,6 +179,21 @@ def _get_or_create_profile_id(conn: sqlite3.Connection) -> str:
         (profile_id,),
     )
     return profile_id
+
+
+def _current_template_id_for_job(job_id: JobId) -> str:
+    """
+    Return the current Template routing key for a job.
+
+    Notes
+    -----
+    The current relocation step establishes Template-owned authority for
+    selection rules before full Job narrowing exists. Until a later boundary
+    move introduces explicit Template identity, the current job identifier is
+    reused only as a routing key into Template-owned rule storage.
+    """
+
+    return job_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,7 +318,24 @@ class SqliteProfileStore(ProfileStore):
 
     def load_rules(self, job_id: JobId) -> RuleSet:
         """See ProfileStore.load_rules."""
+        selection_rules = self.load_template_selection_rules(job_id)
+        return RuleSet(
+            include=selection_rules.include,
+            exclude=selection_rules.exclude,
+        )
+
+    def save_rules(self, job_id: JobId, name: str, rules: RuleSet) -> None:
+        """See ProfileStore.save_rules."""
+        self.save_template_selection_rules(
+            job_id=job_id,
+            name=name,
+            selection_rules=rules.to_template_selection_rules(),
+        )
+
+    def load_template_selection_rules(self, job_id: JobId) -> TemplateSelectionRules:
+        """See ProfileStore.load_template_selection_rules."""
         with self._connect() as conn:
+            _ensure_schema(conn)
             job = conn.execute(
                 "SELECT job_id FROM jobs WHERE job_id = ? AND is_deleted = 0",
                 (job_id,),
@@ -298,23 +343,44 @@ class SqliteProfileStore(ProfileStore):
             if job is None:
                 raise UnknownJobError(f"Unknown job_id: {job_id}")
 
+            template_id = _current_template_id_for_job(job_id)
             inc = conn.execute(
-                "SELECT pattern FROM rules WHERE job_id = ? AND kind = 'include' ORDER BY position ASC",
-                (job_id,),
+                "SELECT pattern FROM template_selection_rules "
+                "WHERE template_id = ? AND kind = 'include' ORDER BY position ASC",
+                (template_id,),
             ).fetchall()
             exc = conn.execute(
-                "SELECT pattern FROM rules WHERE job_id = ? AND kind = 'exclude' ORDER BY position ASC",
-                (job_id,),
+                "SELECT pattern FROM template_selection_rules "
+                "WHERE template_id = ? AND kind = 'exclude' ORDER BY position ASC",
+                (template_id,),
             ).fetchall()
 
-        return RuleSet(
-            include=tuple(str(r["pattern"]) for r in inc),
-            exclude=tuple(str(r["pattern"]) for r in exc),
+            if not inc and not exc:
+                inc = conn.execute(
+                    "SELECT pattern FROM rules WHERE job_id = ? AND kind = 'include' ORDER BY position ASC",
+                    (job_id,),
+                ).fetchall()
+                exc = conn.execute(
+                    "SELECT pattern FROM rules WHERE job_id = ? AND kind = 'exclude' ORDER BY position ASC",
+                    (job_id,),
+                ).fetchall()
+
+        return TemplateSelectionRules(
+            include=tuple(str(row["pattern"]) for row in inc),
+            exclude=tuple(str(row["pattern"]) for row in exc),
         )
 
-    def save_rules(self, job_id: JobId, name: str, rules: RuleSet) -> None:
-        """See ProfileStore.save_rules."""
-        normalized = normalize_rules(rules)
+    def save_template_selection_rules(
+        self,
+        job_id: JobId,
+        name: str,
+        selection_rules: TemplateSelectionRules,
+    ) -> None:
+        """See ProfileStore.save_template_selection_rules."""
+        normalized = normalize_template_selection_rules(selection_rules)
+        mirror_rules = normalize_rules(
+            RuleSet(include=normalized.include, exclude=normalized.exclude)
+        )
 
         with self._connect() as conn:
             _ensure_schema(conn)
@@ -324,16 +390,35 @@ class SqliteProfileStore(ProfileStore):
                 (job_id, name),
             )
 
+            template_id = _current_template_id_for_job(job_id)
+            conn.execute(
+                "DELETE FROM template_selection_rules "
+                "WHERE template_id = ? AND kind IN ('include','exclude')",
+                (template_id,),
+            )
+            for idx, pattern in enumerate(normalized.include):
+                conn.execute(
+                    "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
+                    "VALUES(?, 'include', ?, ?)",
+                    (template_id, pattern, idx),
+                )
+            for idx, pattern in enumerate(normalized.exclude):
+                conn.execute(
+                    "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
+                    "VALUES(?, 'exclude', ?, ?)",
+                    (template_id, pattern, idx),
+                )
+
             conn.execute(
                 "DELETE FROM rules WHERE job_id = ? AND kind IN ('include','exclude')", (job_id,)
             )
 
-            for idx, pat in enumerate(normalized.include):
+            for idx, pat in enumerate(mirror_rules.include):
                 conn.execute(
                     "INSERT INTO rules(job_id, kind, pattern, position) VALUES(?, 'include', ?, ?)",
                     (job_id, pat, idx),
                 )
-            for idx, pat in enumerate(normalized.exclude):
+            for idx, pat in enumerate(mirror_rules.exclude):
                 conn.execute(
                     "INSERT INTO rules(job_id, kind, pattern, position) VALUES(?, 'exclude', ?, ?)",
                     (job_id, pat, idx),

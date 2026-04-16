@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Sequence
 
+from backup_engine.template_policy import TemplateSelectionRules
+
 from .api import RuleSet
 from .errors import InvalidRuleError
 
@@ -79,4 +81,32 @@ def normalize_rules(rules: RuleSet) -> RuleSet:
         rules,
         include=normalize_patterns(rules.include),
         exclude=normalize_patterns(rules.exclude),
+    )
+
+
+def normalize_template_selection_rules(
+    selection_rules: TemplateSelectionRules,
+) -> TemplateSelectionRules:
+    """
+    Normalize and validate Template-owned selection rules.
+
+    Parameters
+    ----------
+    selection_rules:
+        Template-owned include/exclude rules to normalize.
+
+    Returns
+    -------
+    TemplateSelectionRules
+        Normalized Template-owned selection rules.
+
+    Raises
+    ------
+    InvalidRuleError
+        If any pattern violates invariants.
+    """
+
+    return TemplateSelectionRules(
+        include=normalize_patterns(selection_rules.include),
+        exclude=normalize_patterns(selection_rules.exclude),
     )
