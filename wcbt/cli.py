@@ -448,8 +448,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"Weekdays       : "
                 f"{','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
             )
+            print(f"Current source : {status.current_job_binding.source_root}")
             if status.current_backup_defaults is not None:
-                print(f"Current source : {status.current_backup_defaults.source_root}")
                 print(f"Current comp.  : {status.current_backup_defaults.compression}")
             print(f"Task exists    : {'yes' if status.task_exists else 'no'}")
             return 0
@@ -472,8 +472,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"Weekdays       : "
                 f"{','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
             )
+            print(f"Current source : {status.current_job_binding.source_root}")
             if status.current_backup_defaults is not None:
-                print(f"Current source : {status.current_backup_defaults.source_root}")
                 print(f"Current comp.  : {status.current_backup_defaults.compression}")
             print(f"Task exists    : {'yes' if status.task_exists else 'no'}")
             return 0

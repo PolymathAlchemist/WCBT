@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS profile_meta (
 CREATE TABLE IF NOT EXISTS jobs (
     job_id     TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
+    template_id TEXT,
+    source_root TEXT,
     is_deleted INTEGER NOT NULL DEFAULT 0
 );
 

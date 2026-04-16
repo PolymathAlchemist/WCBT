@@ -458,16 +458,15 @@ class SchedulingTab(QWidget):
         Parameters
         ----------
         status:
-            Combined persisted trigger, task state, and current job-backed
-            backup defaults.
+            Combined persisted trigger, task state, current authoritative Job
+            binding, and compatibility backup defaults.
         """
+        self.source_edit.setText(status.current_job_binding.source_root)
         if status.current_backup_defaults is not None:
-            self.source_edit.setText(status.current_backup_defaults.source_root)
             self._select_combo_by_data(
                 self.compression_combo, status.current_backup_defaults.compression
             )
         else:
-            self.source_edit.setText("")
             self.compression_combo.setCurrentIndex(0)
         self.start_time_edit.setText(status.schedule.start_time_local)
         self._select_combo_by_data(self.cadence_combo, status.schedule.cadence)
@@ -501,8 +500,8 @@ class SchedulingTab(QWidget):
         Parameters
         ----------
         status:
-            Combined persisted trigger, task state, and current job-backed
-            backup defaults.
+            Combined persisted trigger, task state, current authoritative Job
+            binding, and compatibility backup defaults.
 
         Returns
         -------
@@ -518,10 +517,15 @@ class SchedulingTab(QWidget):
             f"  weekdays: {','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
         )
         lines.append(f"  task_exists: {str(status.task_exists).lower()}")
+        lines.append("")
+        lines.append("CURRENT JOB BINDING")
+        lines.append(f"  job_id: {status.current_job_binding.job_id}")
+        lines.append(f"  job_name: {status.current_job_binding.job_name}")
+        lines.append(f"  template_id: {status.current_job_binding.template_id}")
+        lines.append(f"  source_root: {status.current_job_binding.source_root}")
         if status.current_backup_defaults is not None:
             lines.append("")
-            lines.append("CURRENT JOB BACKUP DEFAULTS")
-            lines.append(f"  source_root: {status.current_backup_defaults.source_root}")
+            lines.append("CURRENT TEMPLATE POLICY VIEW")
             lines.append(f"  compression: {status.current_backup_defaults.compression}")
         if status.scheduler_details:
             lines.append("")

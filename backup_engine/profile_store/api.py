@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from backup_engine.job_binding import JobBinding
 from backup_engine.scheduling.models import BackupScheduleSpec
 from backup_engine.template_policy import TemplatePolicy, TemplateSelectionRules
 
@@ -25,7 +26,7 @@ JobId = str
 @dataclass(frozen=True, slots=True)
 class JobSummary:
     """
-    A stable, minimal representation of a job for GUI selection.
+    A stable, minimal representation of a Job binding for GUI selection.
 
     Attributes
     ----------
@@ -92,7 +93,8 @@ class JobBackupDefaults:
     This type is not an authoritative policy owner. ``source_root`` remains
     Job-owned target binding data, while ``compression`` is Template-owned
     policy mirrored here as transitional compatibility state. Scheduling does
-    not own either field.
+    not own either field. This carrier is not the real Job contract; that role
+    belongs to :class:`backup_engine.job_binding.JobBinding`.
     """
 
     source_root: str
@@ -126,16 +128,18 @@ class JobBackupDefaults:
 
 class ProfileStore(Protocol):
     """
-    Persistence API for current job authoring and transitional policy carriers.
+    Persistence API for Job binding plus transitional policy carriers.
 
     Implementations are engine-owned. The GUI should interact through this
     interface (typically via a GUI adapter that runs calls off the UI thread).
 
     Notes
     -----
-    Template policy is authoritative for selection rules and compression. This
-    protocol still exposes Job-shaped compatibility carriers because runtime and
-    persistence relocation are deferred to later boundary corrections.
+    JobBinding is authoritative for Job meaning: identity, Template reference,
+    and target binding. Template policy is authoritative for selection rules and
+    compression. This protocol still exposes Job-shaped compatibility carriers
+    because runtime and persistence relocation are deferred to later boundary
+    corrections.
     """
 
     def list_jobs(self) -> Sequence[JobSummary]:
@@ -146,6 +150,32 @@ class ProfileStore(Protocol):
         -------
         Sequence[JobSummary]
             Active jobs ordered for display (implementation-defined but stable).
+        """
+        raise NotImplementedError
+
+    def load_job_binding(self, job_id: JobId) -> JobBinding:
+        """
+        Load the authoritative Job-owned binding contract for a job.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the Job binding to load.
+
+        Returns
+        -------
+        JobBinding
+            Authoritative Job meaning for the current live binding.
+
+        Raises
+        ------
+        UnknownJobError
+            If job_id is not present in the store.
+
+        Notes
+        -----
+        This contract defines only Job identity, Template reference, and target
+        binding. Policy and compatibility residue are intentionally excluded.
         """
         raise NotImplementedError
 
@@ -213,7 +243,7 @@ class ProfileStore(Protocol):
         Returns
         -------
         RuleSet
-            Persisted rules for the job.
+            Persisted compatibility mirror for the job.
 
         Raises
         ------
@@ -233,7 +263,7 @@ class ProfileStore(Protocol):
         name:
             Display name to store for job listing.
         rules:
-            Include/exclude patterns to persist.
+            Include/exclude patterns to persist as a compatibility mirror.
 
         Raises
         ------

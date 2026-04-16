@@ -23,20 +23,34 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Sequence
+from typing import Final, Sequence, cast
 
+from backup_engine.job_binding import JobBinding
 from backup_engine.scheduling.models import BackupScheduleSpec, normalize_schedule_spec
 from backup_engine.template_policy import TemplateSelectionRules
 
 from ..paths_and_safety import ProfilePaths, ensure_profile_directories, resolve_profile_paths
 from .api import JobBackupDefaults, JobId, JobSummary, ProfileStore, RuleSet
 from .errors import InvalidRuleError, UnknownJobError
-from .rules import normalize_rules, normalize_template_selection_rules
+from .rules import normalize_template_selection_rules
 from .schema import SCHEMA_V1
 
 # Stable UUID namespace for JobId derivation.
 # Changing this will invalidate all persisted job identities.
 JOB_ID_NAMESPACE: Final[uuid.UUID] = uuid.UUID("6b0e2c7a-8e8f-4c5a-bb5d-9e6c6a3e7a01")
+
+
+def _new_template_id() -> str:
+    """
+    Return a new stable Template identifier.
+
+    Returns
+    -------
+    str
+        Newly generated Template identifier.
+    """
+
+    return uuid.uuid4().hex
 
 
 def profile_store_db_path(profile_name: str, data_root: Path | None) -> Path:
@@ -185,6 +199,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     col_names = {str(r["name"]) for r in cols}
     if "is_deleted" not in col_names:
         conn.execute("ALTER TABLE jobs ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+    if "template_id" not in col_names:
+        conn.execute("ALTER TABLE jobs ADD COLUMN template_id TEXT NULL")
+    if "source_root" not in col_names:
+        conn.execute("ALTER TABLE jobs ADD COLUMN source_root TEXT NULL")
 
     # Optional per-job UI state (restore tab).
     if "archive_root" not in col_names:
@@ -212,19 +230,143 @@ def _get_or_create_profile_id(conn: sqlite3.Connection) -> str:
     return profile_id
 
 
-def _current_template_id_for_job(job_id: JobId) -> str:
+def _legacy_template_id_for_job(job_id: JobId) -> str:
     """
-    Return the current Template routing key for a job.
+    Return the legacy Template routing key for a job.
 
     Notes
     -----
-    The current relocation step establishes Template-owned authority for
-    selection rules before full Job narrowing exists. Until a later boundary
-    move introduces explicit Template identity, the current job identifier is
-    reused only as a routing key into Template-owned rule storage.
+    Older data stored Template-owned policy under a job-derived key. That
+    routing remains readable as a compatibility fallback while independent
+    Template identity is introduced incrementally.
     """
 
     return job_id
+
+
+def _load_or_create_template_id(conn: sqlite3.Connection, job_id: JobId) -> str:
+    """
+    Return the persisted independent Template identifier for a job.
+
+    Parameters
+    ----------
+    conn:
+        Open SQLite connection.
+    job_id:
+        Identifier of the job whose Template reference should be loaded.
+
+    Returns
+    -------
+    str
+        Independent Template identifier referenced by the job.
+
+    Raises
+    ------
+    UnknownJobError
+        If the job does not exist or has been soft deleted.
+
+    Notes
+    -----
+    Existing jobs created before explicit Template identity existed are lazily
+    assigned a new independent Template identifier here. Template-owned policy
+    reads continue to fall back to the legacy job-derived routing key so this
+    backfill does not require broad migration.
+    """
+
+    row = _load_existing_job_row(conn, job_id)
+    template_id_raw = row["template_id"]
+    if template_id_raw is not None and str(template_id_raw).strip():
+        return str(template_id_raw)
+
+    template_id = _new_template_id()
+    conn.execute(
+        "UPDATE jobs SET template_id = ? WHERE job_id = ? AND is_deleted = 0",
+        (template_id, job_id),
+    )
+    return template_id
+
+
+def _load_existing_job_row(conn: sqlite3.Connection, job_id: JobId) -> sqlite3.Row:
+    """
+    Return the active jobs row for an existing job.
+
+    Parameters
+    ----------
+    conn:
+        Open SQLite connection.
+    job_id:
+        Identifier of the job to load.
+
+    Returns
+    -------
+    sqlite3.Row
+        Active jobs row for the requested job.
+
+    Raises
+    ------
+    UnknownJobError
+        If the job does not exist or has been soft deleted.
+    """
+
+    row = conn.execute(
+        "SELECT job_id, name, template_id, source_root FROM jobs "
+        "WHERE job_id = ? AND is_deleted = 0",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        raise UnknownJobError(f"Unknown job_id: {job_id}")
+    return cast(sqlite3.Row, row)
+
+
+def _load_or_promote_job_source_root(conn: sqlite3.Connection, job_id: JobId) -> str:
+    """
+    Return the authoritative Job-owned source root for a job.
+
+    Parameters
+    ----------
+    conn:
+        Open SQLite connection.
+    job_id:
+        Identifier of the job whose binding root should be loaded.
+
+    Returns
+    -------
+    str
+        Authoritative Job-owned source root.
+
+    Raises
+    ------
+    UnknownJobError
+        If the job does not exist or has been soft deleted.
+
+    Notes
+    -----
+    Older data may still store the binding root only in compatibility mirrors.
+    When encountered, this function promotes the value into the Job row so
+    future reads use authoritative Job-owned storage directly.
+    """
+
+    row = _load_existing_job_row(conn, job_id)
+    source_root_raw = row["source_root"]
+    if source_root_raw is not None:
+        return str(source_root_raw)
+
+    source_root_row = conn.execute(
+        "SELECT source_root FROM job_backup_defaults WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()
+    if source_root_row is None:
+        source_root_row = conn.execute(
+            "SELECT source_root FROM scheduled_backup_legacy_inputs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+
+    source_root = str(source_root_row["source_root"]) if source_root_row is not None else ""
+    conn.execute(
+        "UPDATE jobs SET source_root = ? WHERE job_id = ? AND is_deleted = 0",
+        (source_root, job_id),
+    )
+    return source_root
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +405,21 @@ class SqliteProfileStore(ProfileStore):
                 "SELECT job_id, name FROM jobs WHERE is_deleted = 0 ORDER BY name ASC"
             ).fetchall()
         return [JobSummary(job_id=str(r["job_id"]), name=str(r["name"])) for r in rows]
+
+    def load_job_binding(self, job_id: JobId) -> JobBinding:
+        """See ProfileStore.load_job_binding."""
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            row = _load_existing_job_row(conn, job_id)
+            template_id = _load_or_create_template_id(conn, job_id)
+            source_root = _load_or_promote_job_source_root(conn, job_id)
+
+        return JobBinding(
+            job_id=str(row["job_id"]),
+            job_name=str(row["name"]),
+            template_id=template_id,
+            source_root=source_root,
+        )
 
     def load_restore_defaults(self, job_id: JobId) -> tuple[str | None, str | None]:
         """
@@ -321,9 +478,17 @@ class SqliteProfileStore(ProfileStore):
 
             # Insert new job, or revive if previously soft-deleted.
             conn.execute(
-                "INSERT INTO jobs(job_id, name, is_deleted) VALUES(?, ?, 0) "
-                "ON CONFLICT(job_id) DO UPDATE SET name = excluded.name, is_deleted = 0",
-                (job_id, name),
+                "INSERT INTO jobs(job_id, name, template_id, source_root, is_deleted) "
+                "VALUES(?, ?, ?, '', 0) "
+                "ON CONFLICT(job_id) DO UPDATE SET "
+                "name = excluded.name, "
+                "is_deleted = 0",
+                (job_id, name, _new_template_id()),
+            )
+            conn.execute(
+                "UPDATE jobs SET source_root = COALESCE(source_root, '') "
+                "WHERE job_id = ? AND is_deleted = 0",
+                (job_id,),
             )
         return job_id
 
@@ -374,7 +539,7 @@ class SqliteProfileStore(ProfileStore):
             if job is None:
                 raise UnknownJobError(f"Unknown job_id: {job_id}")
 
-            template_id = _current_template_id_for_job(job_id)
+            template_id = _load_or_create_template_id(conn, job_id)
             inc = conn.execute(
                 "SELECT pattern FROM template_selection_rules "
                 "WHERE template_id = ? AND kind = 'include' ORDER BY position ASC",
@@ -387,6 +552,33 @@ class SqliteProfileStore(ProfileStore):
             ).fetchall()
 
             if not inc and not exc:
+                legacy_template_id = _legacy_template_id_for_job(job_id)
+                if legacy_template_id != template_id:
+                    inc = conn.execute(
+                        "SELECT pattern FROM template_selection_rules "
+                        "WHERE template_id = ? AND kind = 'include' ORDER BY position ASC",
+                        (legacy_template_id,),
+                    ).fetchall()
+                    exc = conn.execute(
+                        "SELECT pattern FROM template_selection_rules "
+                        "WHERE template_id = ? AND kind = 'exclude' ORDER BY position ASC",
+                        (legacy_template_id,),
+                    ).fetchall()
+                    if inc or exc:
+                        for idx, pattern_row in enumerate(inc):
+                            conn.execute(
+                                "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
+                                "VALUES(?, 'include', ?, ?)",
+                                (template_id, str(pattern_row["pattern"]), idx),
+                            )
+                        for idx, pattern_row in enumerate(exc):
+                            conn.execute(
+                                "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
+                                "VALUES(?, 'exclude', ?, ?)",
+                                (template_id, str(pattern_row["pattern"]), idx),
+                            )
+
+            if not inc and not exc:
                 inc = conn.execute(
                     "SELECT pattern FROM rules WHERE job_id = ? AND kind = 'include' ORDER BY position ASC",
                     (job_id,),
@@ -395,6 +587,19 @@ class SqliteProfileStore(ProfileStore):
                     "SELECT pattern FROM rules WHERE job_id = ? AND kind = 'exclude' ORDER BY position ASC",
                     (job_id,),
                 ).fetchall()
+                if inc or exc:
+                    for idx, pattern_row in enumerate(inc):
+                        conn.execute(
+                            "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
+                            "VALUES(?, 'include', ?, ?)",
+                            (template_id, str(pattern_row["pattern"]), idx),
+                        )
+                    for idx, pattern_row in enumerate(exc):
+                        conn.execute(
+                            "INSERT INTO template_selection_rules(template_id, kind, pattern, position) "
+                            "VALUES(?, 'exclude', ?, ?)",
+                            (template_id, str(pattern_row["pattern"]), idx),
+                        )
 
         return TemplateSelectionRules(
             include=tuple(str(row["pattern"]) for row in inc),
@@ -409,19 +614,13 @@ class SqliteProfileStore(ProfileStore):
     ) -> None:
         """See ProfileStore.save_template_selection_rules."""
         normalized = normalize_template_selection_rules(selection_rules)
-        mirror_rules = normalize_rules(
-            RuleSet(include=normalized.include, exclude=normalized.exclude)
-        )
 
         with self._connect() as conn:
             _ensure_schema(conn)
-            conn.execute(
-                "INSERT INTO jobs(job_id, name, is_deleted) VALUES(?, ?, 0) "
-                "ON CONFLICT(job_id) DO UPDATE SET name = excluded.name, is_deleted = 0",
-                (job_id, name),
-            )
+            _ = name
+            _load_existing_job_row(conn, job_id)
 
-            template_id = _current_template_id_for_job(job_id)
+            template_id = _load_or_create_template_id(conn, job_id)
             conn.execute(
                 "DELETE FROM template_selection_rules "
                 "WHERE template_id = ? AND kind IN ('include','exclude')",
@@ -440,21 +639,6 @@ class SqliteProfileStore(ProfileStore):
                     (template_id, pattern, idx),
                 )
 
-            conn.execute(
-                "DELETE FROM rules WHERE job_id = ? AND kind IN ('include','exclude')", (job_id,)
-            )
-
-            for idx, pat in enumerate(mirror_rules.include):
-                conn.execute(
-                    "INSERT INTO rules(job_id, kind, pattern, position) VALUES(?, 'include', ?, ?)",
-                    (job_id, pat, idx),
-                )
-            for idx, pat in enumerate(mirror_rules.exclude):
-                conn.execute(
-                    "INSERT INTO rules(job_id, kind, pattern, position) VALUES(?, 'exclude', ?, ?)",
-                    (job_id, pat, idx),
-                )
-
     def load_template_compression(self, job_id: JobId) -> str:
         """See ProfileStore.load_template_compression."""
         with self._connect() as conn:
@@ -466,21 +650,46 @@ class SqliteProfileStore(ProfileStore):
             if job is None:
                 raise UnknownJobError(f"Unknown job_id: {job_id}")
 
-            template_id = _current_template_id_for_job(job_id)
+            template_id = _load_or_create_template_id(conn, job_id)
             row = conn.execute(
                 "SELECT compression FROM template_backup_policy WHERE template_id = ?",
                 (template_id,),
             ).fetchone()
             if row is None:
+                legacy_template_id = _legacy_template_id_for_job(job_id)
+                if legacy_template_id != template_id:
+                    row = conn.execute(
+                        "SELECT compression FROM template_backup_policy WHERE template_id = ?",
+                        (legacy_template_id,),
+                    ).fetchone()
+                    if row is not None:
+                        conn.execute(
+                            "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
+                            "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
+                            (template_id, str(row["compression"])),
+                        )
+            if row is None:
                 row = conn.execute(
                     "SELECT compression FROM job_backup_defaults WHERE job_id = ?",
                     (job_id,),
                 ).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
+                        "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
+                        (template_id, _normalize_template_compression(str(row["compression"]))),
+                    )
             if row is None:
                 row = conn.execute(
                     "SELECT compression FROM scheduled_backup_legacy_inputs WHERE job_id = ?",
                     (job_id,),
                 ).fetchone()
+                if row is not None:
+                    conn.execute(
+                        "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
+                        "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
+                        (template_id, _normalize_template_compression(str(row["compression"]))),
+                    )
             if row is None:
                 raise UnknownJobError(f"No template compression found for job_id: {job_id}")
 
@@ -492,13 +701,10 @@ class SqliteProfileStore(ProfileStore):
 
         with self._connect() as conn:
             _ensure_schema(conn)
-            conn.execute(
-                "INSERT INTO jobs(job_id, name, is_deleted) VALUES(?, ?, 0) "
-                "ON CONFLICT(job_id) DO UPDATE SET name = excluded.name, is_deleted = 0",
-                (job_id, name),
-            )
+            _ = name
+            _load_existing_job_row(conn, job_id)
 
-            template_id = _current_template_id_for_job(job_id)
+            template_id = _load_or_create_template_id(conn, job_id)
             conn.execute(
                 "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
                 "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
@@ -530,12 +736,9 @@ class SqliteProfileStore(ProfileStore):
         with self._connect() as conn:
             _ensure_schema(conn)
             row = conn.execute(
-                "SELECT js.job_id, js.cadence, js.start_time_local, js.weekdays, "
-                "job_defaults.source_root AS job_source_root, "
-                "job_defaults.compression AS job_compression "
+                "SELECT js.job_id, js.cadence, js.start_time_local, js.weekdays "
                 "FROM job_schedules js "
                 "JOIN jobs j ON j.job_id = js.job_id "
-                "LEFT JOIN job_backup_defaults job_defaults ON job_defaults.job_id = js.job_id "
                 "WHERE js.job_id = ? AND j.is_deleted = 0",
                 (job_id,),
             ).fetchone()
@@ -544,20 +747,22 @@ class SqliteProfileStore(ProfileStore):
 
             legacy_row = conn.execute("PRAGMA table_info(job_schedules)").fetchall()
             legacy_columns = {str(column["name"]) for column in legacy_row}
-            fallback_row = None
-            if "source_root" in legacy_columns or "compression" in legacy_columns:
-                fallback_row = conn.execute(
-                    "SELECT source_root, compression FROM job_schedules WHERE job_id = ?",
+            if "source_root" in legacy_columns:
+                legacy_source_root_row = conn.execute(
+                    "SELECT source_root FROM job_schedules WHERE job_id = ?",
                     (job_id,),
                 ).fetchone()
+                if legacy_source_root_row is not None:
+                    conn.execute(
+                        "UPDATE jobs SET source_root = COALESCE(source_root, ?) "
+                        "WHERE job_id = ? AND is_deleted = 0",
+                        (str(legacy_source_root_row["source_root"]), job_id),
+                    )
 
         weekdays_raw = str(row["weekdays"]) if row["weekdays"] is not None else ""
         weekdays = tuple(part for part in weekdays_raw.split(",") if part)
-        source_root_value = row["job_source_root"]
+        source_root_value = self.load_job_binding(job_id).source_root
         compression_value = self.load_template_compression(job_id)
-
-        if source_root_value is None and fallback_row is not None:
-            source_root_value = fallback_row["source_root"]
 
         return normalize_schedule_spec(
             BackupScheduleSpec(
@@ -612,40 +817,16 @@ class SqliteProfileStore(ProfileStore):
                     ",".join(normalized.weekdays) if normalized.weekdays else None,
                 ),
             )
+            conn.execute(
+                "UPDATE jobs SET source_root = ? WHERE job_id = ? AND is_deleted = 0",
+                (normalized.source_root, normalized.job_id),
+            )
 
         self.save_template_compression(
             job_id=normalized.job_id,
             name=str(job["name"]),
             compression=normalized.compression,
         )
-
-        with self._connect() as conn:
-            _ensure_schema(conn)
-            conn.execute(
-                "INSERT INTO job_backup_defaults(job_id, source_root, compression) "
-                "VALUES(?, ?, ?) "
-                "ON CONFLICT(job_id) DO UPDATE SET "
-                "source_root = excluded.source_root, "
-                "compression = excluded.compression",
-                (
-                    normalized.job_id,
-                    normalized.source_root,
-                    normalized.compression,
-                ),
-            )
-
-            conn.execute(
-                "INSERT INTO scheduled_backup_legacy_inputs(job_id, source_root, compression) "
-                "VALUES(?, ?, ?) "
-                "ON CONFLICT(job_id) DO UPDATE SET "
-                "source_root = excluded.source_root, "
-                "compression = excluded.compression",
-                (
-                    normalized.job_id,
-                    normalized.source_root,
-                    normalized.compression,
-                ),
-            )
 
     def delete_backup_schedule(self, job_id: JobId) -> None:
         """
@@ -665,27 +846,10 @@ class SqliteProfileStore(ProfileStore):
         """
         Load the current Job-shaped compatibility carrier for backup inputs.
         """
-        with self._connect() as conn:
-            _ensure_schema(conn)
-            row = conn.execute(
-                "SELECT defaults.source_root, defaults.compression "
-                "FROM job_backup_defaults defaults "
-                "JOIN jobs j ON j.job_id = defaults.job_id "
-                "WHERE defaults.job_id = ? AND j.is_deleted = 0",
-                (job_id,),
-            ).fetchone()
-            if row is None:
-                row = conn.execute(
-                    "SELECT source_root, compression FROM scheduled_backup_legacy_inputs "
-                    "WHERE job_id = ?",
-                    (job_id,),
-                ).fetchone()
-            if row is None:
-                raise UnknownJobError(f"No backup defaults found for job_id: {job_id}")
-
+        binding = self.load_job_binding(job_id)
         compression = self.load_template_compression(job_id)
         return JobBackupDefaults(
-            source_root=str(row["source_root"]),
+            source_root=binding.source_root,
             compression=compression,
         )
 
@@ -723,16 +887,8 @@ class SqliteProfileStore(ProfileStore):
         with self._connect() as conn:
             _ensure_schema(conn)
             conn.execute(
-                "INSERT INTO job_backup_defaults(job_id, source_root, compression) "
-                "VALUES(?, ?, ?) "
-                "ON CONFLICT(job_id) DO UPDATE SET "
-                "source_root = excluded.source_root, "
-                "compression = excluded.compression",
-                (
-                    job_id,
-                    defaults.source_root,
-                    _normalize_template_compression(defaults.compression),
-                ),
+                "UPDATE jobs SET source_root = ? WHERE job_id = ? AND is_deleted = 0",
+                (defaults.source_root, job_id),
             )
 
 

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
 from backup_engine.errors import InvalidScheduleError
 
 if TYPE_CHECKING:
+    from backup_engine.job_binding import JobBinding
     from backup_engine.profile_store.api import JobBackupDefaults
 
 _WEEKDAY_ORDER: tuple[str, ...] = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
@@ -227,10 +228,13 @@ class ScheduledBackupStatus:
         Persisted scheduled-task record. Trigger metadata is authoritative for
         this boundary; any attached legacy definition payload is transitional
         compatibility state only.
+    current_job_binding:
+        Current authoritative Job binding. This is the canonical Job read shape
+        for identity, Template reference, and live target binding.
     current_backup_defaults:
         Current Job-shaped compatibility carrier. These values are shown
-        alongside the trigger for user-facing convenience, but they are not
-        part of the scheduling boundary.
+        alongside the trigger for user-facing convenience and policy display,
+        but they are not part of the scheduling boundary.
     task_name:
         Derived Windows task name for the job.
     task_exists:
@@ -240,6 +244,7 @@ class ScheduledBackupStatus:
     """
 
     schedule: BackupScheduleSpec
+    current_job_binding: JobBinding
     current_backup_defaults: JobBackupDefaults | None
     task_name: str
     task_exists: bool

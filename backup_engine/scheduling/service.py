@@ -13,7 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from backup_engine.profile_store.api import JobBackupDefaults
+from backup_engine.job_binding import JobBinding
+from backup_engine.profile_store.api import JobBackupDefaults, ProfileStore
 from backup_engine.profile_store.sqlite_store import open_profile_store
 
 from .models import BackupScheduleSpec, ScheduledBackupStatus, normalize_schedule_spec
@@ -138,11 +139,16 @@ def query_scheduled_backup(
     """
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
     schedule = store.load_backup_schedule(job_id)
-    current_backup_defaults = store.load_job_backup_defaults(job_id)
+    current_job_binding = store.load_job_binding(job_id)
+    current_backup_defaults = _load_current_backup_defaults(
+        store=store,
+        current_job_binding=current_job_binding,
+    )
     task_name = scheduled_task_name(profile_name=profile_name, job_id=job_id)
     task_info = (backend or SchtasksBackend()).query_task(task_name=task_name)
     return ScheduledBackupStatus(
         schedule=schedule,
+        current_job_binding=current_job_binding,
         current_backup_defaults=current_backup_defaults,
         task_name=task_name,
         task_exists=task_info.exists,
@@ -234,11 +240,40 @@ def load_scheduled_backup_run_request(
     scheduler remains a trigger-only boundary.
     """
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
-    defaults = store.load_job_backup_defaults(job_id)
-    job_name = next(
-        (summary.name for summary in store.list_jobs() if summary.job_id == job_id), None
+    current_job_binding = store.load_job_binding(job_id)
+    defaults = _load_current_backup_defaults(
+        store=store,
+        current_job_binding=current_job_binding,
     )
-    return defaults, job_name
+    return defaults, current_job_binding.job_name
+
+
+def _load_current_backup_defaults(
+    *,
+    store: ProfileStore,
+    current_job_binding: JobBinding,
+) -> JobBackupDefaults:
+    """
+    Build the compatibility backup-defaults view from authoritative reads.
+
+    Parameters
+    ----------
+    store:
+        Profile store implementation used to resolve current Template policy.
+    current_job_binding:
+        Current authoritative Job binding.
+
+    Returns
+    -------
+    JobBackupDefaults
+        Compatibility carrier built from authoritative Job binding plus
+        current Template-owned compression policy.
+    """
+    compression = store.load_template_compression(current_job_binding.job_id)
+    return JobBackupDefaults(
+        source_root=current_job_binding.source_root,
+        compression=compression,
+    )
 
 
 def _build_scheduled_backup_command(

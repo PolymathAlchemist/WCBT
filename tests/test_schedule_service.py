@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from backup_engine.errors import InvalidScheduleError
+from backup_engine.job_binding import JobBinding
 from backup_engine.profile_store.api import JobBackupDefaults
 from backup_engine.profile_store.sqlite_store import open_profile_store
 from backup_engine.scheduling.models import BackupScheduleSpec, ScheduledTaskInfo
@@ -91,6 +92,17 @@ def test_create_schedule_persists_data_and_builds_task_command(tmp_path: Path) -
     assert saved.start_time_local == "06:30"
     assert saved.weekdays == ("MON", "FRI")
     assert saved.compression == "zip"
+    assert status.current_job_binding == JobBinding(
+        job_id=job_id,
+        job_name="My Job",
+        template_id=status.current_job_binding.template_id,
+        source_root="C:/games/world",
+    )
+    assert status.current_job_binding.template_id != job_id
+    assert status.current_backup_defaults == JobBackupDefaults(
+        source_root="C:/games/world",
+        compression="zip",
+    )
     assert backend.created[0]["task_name"] == f"WCBT-default-{job_id}"
     assert "--job-id" in str(backend.created[0]["task_command"])
     assert "scheduled-backup" in str(backend.created[0]["task_command"])
@@ -121,6 +133,11 @@ def test_query_schedule_reports_missing_task_without_losing_persisted_data(tmp_p
     )
 
     assert status.schedule.job_id == job_id
+    assert status.current_job_binding.source_root == "C:/games/world"
+    assert status.current_backup_defaults == JobBackupDefaults(
+        source_root="C:/games/world",
+        compression="none",
+    )
     assert status.task_exists is False
 
 

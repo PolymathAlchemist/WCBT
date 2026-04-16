@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from backup_engine.job_binding import JobBinding
 from backup_engine.profile_store.api import JobBackupDefaults, RuleSet
 from backup_engine.profile_store.errors import InvalidRuleError
 from backup_engine.profile_store.rules import normalize_patterns, normalize_rules
@@ -52,3 +53,17 @@ def test_job_backup_defaults_exposes_template_policy_without_source_root() -> No
         exclude=("b/**",),
     )
     assert derived_policy.compression == "zip"
+
+
+def test_job_binding_contains_only_identity_template_reference_and_target_binding() -> None:
+    binding = JobBinding(
+        job_id="job-1",
+        job_name="Example Job",
+        template_id="template-1",
+        source_root="C:/games/world",
+    )
+
+    assert binding.job_id == "job-1"
+    assert binding.job_name == "Example Job"
+    assert binding.template_id == "template-1"
+    assert binding.source_root == "C:/games/world"

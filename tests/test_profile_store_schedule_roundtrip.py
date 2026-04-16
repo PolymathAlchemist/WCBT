@@ -33,9 +33,10 @@ def test_profile_store_backup_schedule_roundtrip(tmp_path: Path) -> None:
     assert loaded.start_time_local == "06:45"
     assert loaded.weekdays == ("MON", "WED")
     assert loaded.compression == "zip"
+    assert store.load_job_binding(job_id).source_root == "C:/games/world"
 
 
-def test_profile_store_persists_trigger_and_legacy_schedule_data_in_separate_tables(
+def test_profile_store_persists_trigger_without_writing_legacy_schedule_mirror(
     tmp_path: Path,
 ) -> None:
     store = open_profile_store(profile_name="default", data_root=tmp_path)
@@ -59,7 +60,7 @@ def test_profile_store_persists_trigger_and_legacy_schedule_data_in_separate_tab
         schedule_columns = {
             str(column["name"]) for column in connection.execute("PRAGMA table_info(job_schedules)")
         }
-        legacy_row = connection.execute(
+        retired_legacy_row = connection.execute(
             "SELECT source_root, compression FROM scheduled_backup_legacy_inputs WHERE job_id = ?",
             (job_id,),
         ).fetchone()
@@ -68,9 +69,7 @@ def test_profile_store_persists_trigger_and_legacy_schedule_data_in_separate_tab
 
     assert "source_root" not in schedule_columns
     assert "compression" not in schedule_columns
-    assert legacy_row is not None
-    assert str(legacy_row["source_root"]) == "C:/games/world"
-    assert str(legacy_row["compression"]) == "none"
+    assert retired_legacy_row is None
 
 
 def test_profile_store_delete_backup_schedule_is_idempotent(tmp_path: Path) -> None:

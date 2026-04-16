@@ -6,6 +6,7 @@ import pytest
 
 import wcbt.cli as cli_module
 from backup_engine.errors import InvalidScheduleError
+from backup_engine.job_binding import JobBinding
 from backup_engine.profile_store.api import JobBackupDefaults
 from backup_engine.scheduling.models import BackupScheduleSpec, ScheduledBackupStatus
 
@@ -66,6 +67,12 @@ def test_cli_schedule_create_prints_summary(
         assert isinstance(schedule, BackupScheduleSpec)
         return ScheduledBackupStatus(
             schedule=schedule,
+            current_job_binding=JobBinding(
+                job_id="job1",
+                job_name="My Job",
+                template_id="job1",
+                source_root="C:/tmp/source",
+            ),
             current_backup_defaults=JobBackupDefaults(
                 source_root="C:/tmp/source",
                 compression="none",
