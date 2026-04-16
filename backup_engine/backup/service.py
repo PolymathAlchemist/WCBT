@@ -103,6 +103,7 @@ def run_backup(
     source: Path,
     dry_run: bool,
     data_root: Path | None,
+    backup_origin: str = "normal",
     job_id: str | None = None,
     job_name: str | None = None,
     excluded_directory_names: Iterable[str] | None = None,
@@ -178,6 +179,8 @@ def run_backup(
     """
     if max_items < 0:
         raise ValueError("max_items must be non-negative.")
+    if backup_origin not in {"normal", "scheduled", "pre_restore"}:
+        raise ValueError(f"Unsupported backup_origin: {backup_origin!r}")
     if execute and dry_run:
         raise ValueError("execute=True is not valid in dry-run mode.")
     if compress and not execute:
@@ -290,6 +293,7 @@ def run_backup(
                 archive_output_path=archive_output_path,
                 profile_name=profile_name,
                 source_root=source_root,
+                backup_origin=backup_origin,
                 job_id=job_id,
                 job_name=job_name,
                 clock=run_clock,
@@ -315,6 +319,7 @@ def run_backup(
             profile_name=profile_name,
             source_root=source_root,
             clock=run_clock,
+            backup_origin=backup_origin,
             job_id=job_id,
             job_name=job_name,
         )
@@ -443,6 +448,7 @@ def _run_compressed_backup(
     archive_output_path: Path,
     profile_name: str,
     source_root: Path,
+    backup_origin: str,
     job_id: str | None,
     job_name: str | None,
     clock: Clock,
@@ -515,6 +521,7 @@ def _run_compressed_backup(
         source_root=source_root,
         archive_root=oz0_root,
         manifest_output_path=manifest_output_path,
+        backup_origin=backup_origin,
         job_id=job_id,
         job_name=job_name,
         clock=clock,
@@ -594,6 +601,7 @@ def _build_run_manifest(
     source_root: Path,
     archive_root: Path,
     manifest_output_path: Path,
+    backup_origin: str,
     job_id: str | None,
     job_name: str | None,
     clock: Clock,
@@ -615,6 +623,7 @@ def _build_run_manifest(
         plan_text_path=str(manifest_output_path.with_suffix(".plan.txt")),
         profile_name=profile_name,
         source_root=str(source_root),
+        backup_origin=backup_origin,
         job_id=job_id,
         job_name=job_name,
         operations=list(operations_payload),
@@ -676,6 +685,7 @@ def _build_executed_run_manifest(
         plan_text_path=base_manifest.plan_text_path,
         profile_name=base_manifest.profile_name,
         source_root=base_manifest.source_root,
+        backup_origin=base_manifest.backup_origin,
         job_id=base_manifest.job_id,
         job_name=base_manifest.job_name,
         operations=list(base_manifest.operations),

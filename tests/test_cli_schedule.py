@@ -150,4 +150,5 @@ def test_cli_scheduled_backup_uses_saved_schedule(monkeypatch: pytest.MonkeyPatc
     assert seen["execute"] is True
     assert seen["compress"] is True
     assert seen["compression"] == "zip"
+    assert seen["backup_origin"] == "scheduled"
     assert seen["job_name"] == "My Job"

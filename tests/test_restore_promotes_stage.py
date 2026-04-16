@@ -34,6 +34,7 @@ def _write_minimal_run_manifest(*, manifest_path: Path, archive_root: Path) -> N
 def test_restore_non_dry_run_promotes_stage_to_destination(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive_root"
     archive_root.mkdir()
+    data_root = tmp_path / "data_root"
 
     manifest_path = tmp_path / "run_manifest.json"
     _write_minimal_run_manifest(manifest_path=manifest_path, archive_root=archive_root)
@@ -49,7 +50,7 @@ def test_restore_non_dry_run_promotes_stage_to_destination(tmp_path: Path) -> No
         mode="add-only",
         verify="none",
         dry_run=False,
-        data_root=None,
+        data_root=data_root,
         clock=FixedClock(datetime(2000, 1, 1, tzinfo=timezone.utc)),
     )
 

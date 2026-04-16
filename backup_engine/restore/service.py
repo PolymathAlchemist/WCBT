@@ -423,6 +423,7 @@ def _run_pre_restore_backup(
         source=destination_root,
         dry_run=False,
         data_root=data_root,
+        backup_origin="pre_restore",
         execute=True,
         compression=compression,
         job_id=resolved_job_id,

@@ -314,3 +314,36 @@ def test_backup_manifest_persists_gui_job_identity(tmp_path: Path) -> None:
 
     assert payload["job_id"] == "job-a-id"
     assert payload["job_name"] == "Job A"
+
+
+def test_standard_backup_manifest_defaults_backup_origin_to_normal(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    data_root = tmp_path / "data_root"
+
+    _write_source_tree(
+        source_root,
+        [_FileSpec(relative_path=Path("alpha.txt"), content=b"alpha\n")],
+    )
+
+    run_backup(
+        profile_name="end_to_end",
+        source=source_root,
+        dry_run=False,
+        data_root=data_root,
+        excluded_directory_names=None,
+        excluded_file_names=None,
+        use_default_excludes=True,
+        max_items=100,
+        write_plan=False,
+        plan_path=None,
+        overwrite_plan=False,
+        clock=None,
+        execute=True,
+        force=True,
+        break_lock=True,
+    )
+
+    manifest_path = _find_single_backup_manifest(data_root)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert payload["backup_origin"] == "normal"

@@ -13,7 +13,13 @@ from backup_engine.data_models import (
     SourceType,
     utc_now,
 )
-from backup_engine.manifest_store import read_manifest, write_manifest_atomic
+from backup_engine.manifest_store import (
+    BackupRunManifestV2,
+    read_manifest,
+    read_manifest_json,
+    write_manifest_atomic,
+    write_run_manifest_atomic,
+)
 
 
 def test_manifest_round_trip(tmp_path: Path) -> None:
@@ -56,3 +62,46 @@ def test_manifest_round_trip(tmp_path: Path) -> None:
     assert loaded.archive.format == ArchiveFormat.TAR_ZST
     assert loaded.metadata.pinned is True
     assert loaded.telemetry["example"] == 1
+
+
+def test_backup_run_manifest_round_trip_preserves_backup_origin(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest = BackupRunManifestV2(
+        schema_version=BackupRunManifestV2.SCHEMA_VERSION,
+        run_id="20260101_000000Z",
+        created_at_utc="2026-01-01T00:00:00Z",
+        archive_root=str(tmp_path / "archive"),
+        plan_text_path=str(tmp_path / "archive" / "plan.txt"),
+        profile_name="default",
+        source_root="C:/source",
+        backup_origin="pre_restore",
+        operations=[],
+        scan_issues=[],
+    )
+
+    write_run_manifest_atomic(manifest_path, manifest)
+    loaded = BackupRunManifestV2.from_dict(read_manifest_json(manifest_path))
+
+    assert loaded.backup_origin == "pre_restore"
+
+
+def test_backup_run_manifest_round_trip_allows_missing_backup_origin(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest = BackupRunManifestV2(
+        schema_version=BackupRunManifestV2.SCHEMA_VERSION,
+        run_id="20260101_000000Z",
+        created_at_utc="2026-01-01T00:00:00Z",
+        archive_root=str(tmp_path / "archive"),
+        plan_text_path=str(tmp_path / "archive" / "plan.txt"),
+        profile_name="default",
+        source_root="C:/source",
+        operations=[],
+        scan_issues=[],
+    )
+
+    write_run_manifest_atomic(manifest_path, manifest)
+    payload = read_manifest_json(manifest_path)
+    loaded = BackupRunManifestV2.from_dict(payload)
+
+    assert "backup_origin" not in payload
+    assert loaded.backup_origin is None

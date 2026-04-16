@@ -193,6 +193,7 @@ def test_pre_restore_backup_uses_current_live_job_inputs_not_historical_manifest
     )
 
     assert cast(Path, recorded_kwargs["source"]) == destination_root
+    assert recorded_kwargs["backup_origin"] == "pre_restore"
     assert recorded_kwargs["job_id"] == live_job_id
     assert recorded_kwargs["job_name"] == "Current Live Job"
     assert recorded_kwargs["compression"] == "zip"

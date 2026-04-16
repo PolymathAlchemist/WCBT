@@ -519,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
                 source=Path(job_binding.source_root),
                 dry_run=False,
                 data_root=data_root,
+                backup_origin="scheduled",
                 execute=True,
                 compress=compression != "none",
                 compression=compression,
