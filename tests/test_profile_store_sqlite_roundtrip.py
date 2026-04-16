@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from backup_engine.profile_store.api import RuleSet
+from backup_engine.profile_store.api import JobBackupDefaults, RuleSet
 from backup_engine.profile_store.sqlite_store import SqliteProfileStore
 from backup_engine.template_policy import TemplateSelectionRules
 
@@ -59,3 +59,40 @@ def test_template_selection_rules_are_authoritative_and_rules_table_is_mirrored(
         ("exclude", "b/**"),
         ("include", "a/**"),
     ]
+
+
+def test_template_compression_is_authoritative_and_job_defaults_are_mirrored(
+    tmp_path: Path,
+) -> None:
+    store = SqliteProfileStore(db_path=tmp_path / "profiles.sqlite")
+    job_id = store.create_job("Example Job")
+
+    store.save_job_backup_defaults(
+        job_id,
+        defaults=JobBackupDefaults(source_root="C:/games/world", compression="zip"),
+    )
+
+    loaded_defaults = store.load_job_backup_defaults(job_id)
+    loaded_compression = store.load_template_compression(job_id)
+
+    connection = sqlite3.connect(tmp_path / "profiles.sqlite")
+    connection.row_factory = sqlite3.Row
+    try:
+        template_row = connection.execute(
+            "SELECT compression FROM template_backup_policy WHERE template_id = ?",
+            (job_id,),
+        ).fetchone()
+        mirror_row = connection.execute(
+            "SELECT source_root, compression FROM job_backup_defaults WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert loaded_compression == "zip"
+    assert loaded_defaults == JobBackupDefaults(source_root="C:/games/world", compression="zip")
+    assert template_row is not None
+    assert str(template_row["compression"]) == "zip"
+    assert mirror_row is not None
+    assert str(mirror_row["source_root"]) == "C:/games/world"
+    assert str(mirror_row["compression"]) == "zip"

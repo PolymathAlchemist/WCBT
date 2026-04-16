@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS template_selection_rules (
 CREATE INDEX IF NOT EXISTS idx_template_selection_rules_kind
 ON template_selection_rules(template_id, kind);
 
+-- Authoritative Template-owned compression policy.
+CREATE TABLE IF NOT EXISTS template_backup_policy (
+    template_id  TEXT PRIMARY KEY,
+    compression  TEXT NOT NULL DEFAULT 'none'
+);
+
 -- Transitional Job-shaped carrier for Template-owned selection rules.
 CREATE TABLE IF NOT EXISTS rules (
     job_id   TEXT NOT NULL,

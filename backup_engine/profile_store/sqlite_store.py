@@ -97,6 +97,32 @@ def _normalize_patterns(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _normalize_template_compression(value: str) -> str:
+    """
+    Normalize Template-owned compression policy values.
+
+    Parameters
+    ----------
+    value:
+        Raw compression value from a compatibility surface.
+
+    Returns
+    -------
+    str
+        Normalized compression policy value.
+
+    Raises
+    ------
+    InvalidRuleError
+        If the value falls outside the current Template policy surface.
+    """
+
+    normalized = str(value).strip().lower()
+    if normalized not in {"none", "zip", "tar.zst"}:
+        raise InvalidRuleError("compression must be one of: none, zip, tar.zst.")
+    return normalized
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """
     Ensure the DB schema supports current ProfileStore features.
@@ -125,6 +151,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_template_selection_rules_kind "
         "ON template_selection_rules(template_id, kind)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS template_backup_policy ("
+        "template_id TEXT PRIMARY KEY, "
+        "compression TEXT NOT NULL DEFAULT 'none')"
     )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS job_schedules ("
@@ -424,6 +455,56 @@ class SqliteProfileStore(ProfileStore):
                     (job_id, pat, idx),
                 )
 
+    def load_template_compression(self, job_id: JobId) -> str:
+        """See ProfileStore.load_template_compression."""
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            job = conn.execute(
+                "SELECT job_id FROM jobs WHERE job_id = ? AND is_deleted = 0",
+                (job_id,),
+            ).fetchone()
+            if job is None:
+                raise UnknownJobError(f"Unknown job_id: {job_id}")
+
+            template_id = _current_template_id_for_job(job_id)
+            row = conn.execute(
+                "SELECT compression FROM template_backup_policy WHERE template_id = ?",
+                (template_id,),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT compression FROM job_backup_defaults WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT compression FROM scheduled_backup_legacy_inputs WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+            if row is None:
+                raise UnknownJobError(f"No template compression found for job_id: {job_id}")
+
+        return _normalize_template_compression(str(row["compression"]))
+
+    def save_template_compression(self, job_id: JobId, name: str, compression: str) -> None:
+        """See ProfileStore.save_template_compression."""
+        normalized = _normalize_template_compression(compression)
+
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            conn.execute(
+                "INSERT INTO jobs(job_id, name, is_deleted) VALUES(?, ?, 0) "
+                "ON CONFLICT(job_id) DO UPDATE SET name = excluded.name, is_deleted = 0",
+                (job_id, name),
+            )
+
+            template_id = _current_template_id_for_job(job_id)
+            conn.execute(
+                "INSERT INTO template_backup_policy(template_id, compression) VALUES(?, ?) "
+                "ON CONFLICT(template_id) DO UPDATE SET compression = excluded.compression",
+                (template_id, normalized),
+            )
+
     def load_backup_schedule(self, job_id: JobId) -> BackupScheduleSpec:
         """
         Load the persisted scheduled-task record for a job.
@@ -473,12 +554,10 @@ class SqliteProfileStore(ProfileStore):
         weekdays_raw = str(row["weekdays"]) if row["weekdays"] is not None else ""
         weekdays = tuple(part for part in weekdays_raw.split(",") if part)
         source_root_value = row["job_source_root"]
-        compression_value = row["job_compression"]
+        compression_value = self.load_template_compression(job_id)
 
         if source_root_value is None and fallback_row is not None:
             source_root_value = fallback_row["source_root"]
-        if compression_value is None and fallback_row is not None:
-            compression_value = fallback_row["compression"]
 
         return normalize_schedule_spec(
             BackupScheduleSpec(
@@ -513,7 +592,7 @@ class SqliteProfileStore(ProfileStore):
         with self._connect() as conn:
             _ensure_schema(conn)
             job = conn.execute(
-                "SELECT job_id FROM jobs WHERE job_id = ? AND is_deleted = 0",
+                "SELECT job_id, name FROM jobs WHERE job_id = ? AND is_deleted = 0",
                 (normalized.job_id,),
             ).fetchone()
             if job is None:
@@ -534,6 +613,14 @@ class SqliteProfileStore(ProfileStore):
                 ),
             )
 
+        self.save_template_compression(
+            job_id=normalized.job_id,
+            name=str(job["name"]),
+            compression=normalized.compression,
+        )
+
+        with self._connect() as conn:
+            _ensure_schema(conn)
             conn.execute(
                 "INSERT INTO job_backup_defaults(job_id, source_root, compression) "
                 "VALUES(?, ?, ?) "
@@ -596,9 +683,10 @@ class SqliteProfileStore(ProfileStore):
             if row is None:
                 raise UnknownJobError(f"No backup defaults found for job_id: {job_id}")
 
+        compression = self.load_template_compression(job_id)
         return JobBackupDefaults(
             source_root=str(row["source_root"]),
-            compression=str(row["compression"]),
+            compression=compression,
         )
 
     def save_job_backup_defaults(self, job_id: JobId, defaults: JobBackupDefaults) -> None:
@@ -619,13 +707,32 @@ class SqliteProfileStore(ProfileStore):
             if job is None:
                 raise UnknownJobError(f"Unknown job_id: {job_id}")
 
+            job_name_row = conn.execute(
+                "SELECT name FROM jobs WHERE job_id = ? AND is_deleted = 0",
+                (job_id,),
+            ).fetchone()
+            if job_name_row is None:
+                raise UnknownJobError(f"Unknown job_id: {job_id}")
+
+        self.save_template_compression(
+            job_id=job_id,
+            name=str(job_name_row["name"]),
+            compression=defaults.compression,
+        )
+
+        with self._connect() as conn:
+            _ensure_schema(conn)
             conn.execute(
                 "INSERT INTO job_backup_defaults(job_id, source_root, compression) "
                 "VALUES(?, ?, ?) "
                 "ON CONFLICT(job_id) DO UPDATE SET "
                 "source_root = excluded.source_root, "
                 "compression = excluded.compression",
-                (job_id, defaults.source_root, defaults.compression),
+                (
+                    job_id,
+                    defaults.source_root,
+                    _normalize_template_compression(defaults.compression),
+                ),
             )
 
 
