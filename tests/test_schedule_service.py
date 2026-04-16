@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from backup_engine.errors import InvalidScheduleError
+from backup_engine.profile_store.api import JobBackupDefaults
 from backup_engine.profile_store.sqlite_store import open_profile_store
 from backup_engine.scheduling.models import BackupScheduleSpec, ScheduledTaskInfo
 from backup_engine.scheduling.schtasks_backend import SchtasksBackend
@@ -162,13 +163,13 @@ def test_load_scheduled_backup_run_request_returns_schedule_and_job_name(tmp_pat
         )
     )
 
-    schedule, job_name = load_scheduled_backup_run_request(
+    defaults, job_name = load_scheduled_backup_run_request(
         profile_name="default",
         data_root=tmp_path,
         job_id=job_id,
     )
 
-    assert schedule.source_root == "C:/games/world"
+    assert defaults == JobBackupDefaults(source_root="C:/games/world", compression="tar.zst")
     assert job_name == "My Job"
 
 

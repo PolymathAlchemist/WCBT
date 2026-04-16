@@ -442,14 +442,15 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(f"Scheduled task : {status.task_name}")
             print(f"Job id         : {status.schedule.job_id}")
-            print(f"Source         : {status.schedule.source_root}")
             print(f"Cadence        : {status.schedule.cadence}")
             print(f"Start time     : {status.schedule.start_time_local}")
             print(
                 f"Weekdays       : "
                 f"{','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
             )
-            print(f"Compression    : {status.schedule.compression}")
+            if status.current_backup_defaults is not None:
+                print(f"Current source : {status.current_backup_defaults.source_root}")
+                print(f"Current comp.  : {status.current_backup_defaults.compression}")
             print(f"Task exists    : {'yes' if status.task_exists else 'no'}")
             return 0
 
@@ -465,14 +466,15 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(f"Scheduled task : {status.task_name}")
             print(f"Job id         : {status.schedule.job_id}")
-            print(f"Source         : {status.schedule.source_root}")
             print(f"Cadence        : {status.schedule.cadence}")
             print(f"Start time     : {status.schedule.start_time_local}")
             print(
                 f"Weekdays       : "
                 f"{','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
             )
-            print(f"Compression    : {status.schedule.compression}")
+            if status.current_backup_defaults is not None:
+                print(f"Current source : {status.current_backup_defaults.source_root}")
+                print(f"Current comp.  : {status.current_backup_defaults.compression}")
             print(f"Task exists    : {'yes' if status.task_exists else 'no'}")
             return 0
 
@@ -507,19 +509,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scheduled-backup":
         data_root = Path(args.data_root) if args.data_root else None
         try:
-            schedule, job_name = load_scheduled_backup_run_request(
+            backup_defaults, job_name = load_scheduled_backup_run_request(
                 profile_name=args.profile,
                 data_root=data_root,
                 job_id=args.job_id,
             )
             run_backup(
                 profile_name=args.profile,
-                source=Path(schedule.source_root),
+                source=Path(backup_defaults.source_root),
                 dry_run=False,
                 data_root=data_root,
                 execute=True,
-                compress=schedule.compression != "none",
-                compression=schedule.compression,
+                compress=backup_defaults.compression != "none",
+                compression=backup_defaults.compression,
                 job_id=args.job_id,
                 job_name=job_name,
             )

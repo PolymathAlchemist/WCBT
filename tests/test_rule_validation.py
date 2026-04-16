@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from backup_engine.profile_store.api import RuleSet
+from backup_engine.profile_store.api import JobBackupDefaults, RuleSet
 from backup_engine.profile_store.errors import InvalidRuleError
 from backup_engine.profile_store.rules import normalize_patterns, normalize_rules
+from backup_engine.template_policy import TemplateSelectionRules
 
 
 def test_normalize_patterns_drops_empty_and_strips() -> None:
@@ -30,3 +31,24 @@ def test_normalize_rules_applies_to_both_lists() -> None:
     normalized = normalize_rules(rules)
     assert normalized.include == ("a/**",)
     assert normalized.exclude == ("b/*.tmp",)
+
+
+def test_ruleset_exposes_template_selection_rules_view() -> None:
+    rules = RuleSet(include=("a/**",), exclude=("b/**",))
+
+    assert rules.to_template_selection_rules() == TemplateSelectionRules(
+        include=("a/**",),
+        exclude=("b/**",),
+    )
+
+
+def test_job_backup_defaults_exposes_template_policy_without_source_root() -> None:
+    defaults = JobBackupDefaults(source_root="C:/games/world", compression="zip")
+
+    derived_policy = defaults.to_template_policy(RuleSet(include=("a/**",), exclude=("b/**",)))
+
+    assert derived_policy.selection_rules == TemplateSelectionRules(
+        include=("a/**",),
+        exclude=("b/**",),
+    )
+    assert derived_policy.compression == "zip"

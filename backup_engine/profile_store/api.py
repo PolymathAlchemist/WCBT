@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 from backup_engine.scheduling.models import BackupScheduleSpec
+from backup_engine.template_policy import TemplatePolicy, TemplateSelectionRules
 
 JobId = str
 
@@ -41,7 +42,7 @@ class JobSummary:
 @dataclass(frozen=True, slots=True)
 class RuleSet:
     """
-    Include and exclude patterns for a job.
+    Transitional Job-shaped carrier for Template-owned selection rules.
 
     Attributes
     ----------
@@ -49,18 +50,92 @@ class RuleSet:
         Root-relative include globs using '/' separators.
     exclude:
         Root-relative exclude globs using '/' separators.
+
+    Notes
+    -----
+    Template is the authoritative owner of these fields. This type remains on
+    the Job/ProfileStore path only as a compatibility carrier until a later
+    boundary move relocates policy ownership more fully.
     """
 
     include: tuple[str, ...]
     exclude: tuple[str, ...]
 
+    def to_template_selection_rules(self) -> TemplateSelectionRules:
+        """
+        Return the Template-owned view of these selection rules.
+
+        Returns
+        -------
+        TemplateSelectionRules
+            Template-authoritative selection rules represented by this
+            compatibility carrier.
+        """
+
+        return TemplateSelectionRules(include=self.include, exclude=self.exclude)
+
+
+@dataclass(frozen=True, slots=True)
+class JobBackupDefaults:
+    """
+    Transitional mixed-ownership carrier for current job backup inputs.
+
+    Attributes
+    ----------
+    source_root:
+        Job-owned live target binding for the current backup definition.
+    compression:
+        Template-owned compression mode carried here for compatibility only.
+
+    Notes
+    -----
+    This type is not an authoritative policy owner. ``source_root`` remains
+    Job-owned target binding data, while ``compression`` is Template-owned
+    policy mirrored here as transitional compatibility state. Scheduling does
+    not own either field.
+    """
+
+    source_root: str
+    compression: str
+
+    def to_template_policy(self, rules: RuleSet) -> TemplatePolicy:
+        """
+        Return the Template-owned policy represented by compatibility carriers.
+
+        Parameters
+        ----------
+        rules:
+            Transitional carrier for Template-owned selection rules.
+
+        Returns
+        -------
+        TemplatePolicy
+            Template-authoritative policy view derived from compatibility data.
+
+        Notes
+        -----
+        ``source_root`` is intentionally excluded because it is Job-owned target
+        binding, not Template policy.
+        """
+
+        return TemplatePolicy(
+            selection_rules=rules.to_template_selection_rules(),
+            compression=self.compression,
+        )
+
 
 class ProfileStore(Protocol):
     """
-    Persistence API for per-job authoring rules.
+    Persistence API for current job authoring and transitional policy carriers.
 
     Implementations are engine-owned. The GUI should interact through this
     interface (typically via a GUI adapter that runs calls off the UI thread).
+
+    Notes
+    -----
+    Template policy is authoritative for selection rules and compression. This
+    protocol still exposes Job-shaped compatibility carriers because runtime and
+    persistence relocation are deferred to later boundary corrections.
     """
 
     def list_jobs(self) -> Sequence[JobSummary]:
@@ -128,7 +203,7 @@ class ProfileStore(Protocol):
 
     def load_rules(self, job_id: JobId) -> RuleSet:
         """
-        Load rules for a job.
+        Load transitional Job-shaped copies of Template-owned selection rules.
 
         Parameters
         ----------
@@ -149,7 +224,7 @@ class ProfileStore(Protocol):
 
     def save_rules(self, job_id: JobId, name: str, rules: RuleSet) -> None:
         """
-        Persist rules for a job, creating the job if needed.
+        Persist transitional Job-shaped copies of Template-owned selection rules.
 
         Parameters
         ----------
@@ -218,5 +293,46 @@ class ProfileStore(Protocol):
         ----------
         job_id:
             Identifier of the job whose schedule should be removed.
+        """
+        raise NotImplementedError
+
+    def load_job_backup_defaults(self, job_id: JobId) -> JobBackupDefaults:
+        """
+        Load the current Job-shaped compatibility carrier for backup inputs.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job to load.
+
+        Returns
+        -------
+        JobBackupDefaults
+            Compatibility carrier containing Job-owned target binding plus any
+            mirrored Template-owned compression policy.
+
+        Raises
+        ------
+        UnknownJobError
+            If the job or defaults are not present.
+        """
+        raise NotImplementedError
+
+    def save_job_backup_defaults(self, job_id: JobId, defaults: JobBackupDefaults) -> None:
+        """
+        Persist the current Job-shaped compatibility carrier for backup inputs.
+
+        Parameters
+        ----------
+        job_id:
+            Identifier of the job to update.
+        defaults:
+            Compatibility carrier containing Job-owned target binding plus any
+            mirrored Template-owned compression policy.
+
+        Raises
+        ------
+        UnknownJobError
+            If the target job does not exist.
         """
         raise NotImplementedError

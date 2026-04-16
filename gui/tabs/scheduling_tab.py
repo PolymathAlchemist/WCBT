@@ -2,7 +2,7 @@
 Scheduling tab for WCBT GUI.
 
 This tab provides a minimal control surface for Windows Task Scheduler-backed
-backup schedules for existing jobs.
+backup triggers for existing jobs.
 """
 
 from __future__ import annotations
@@ -149,8 +149,8 @@ class SchedulingTab(QWidget):
 
     Responsibilities
     ----------------
-    - Allow the user to create or update a scheduled backup for an existing job.
-    - Show the saved schedule and current Windows task presence.
+    - Allow the user to create or update a scheduled backup trigger for an existing job.
+    - Show the saved trigger and current Windows task presence.
     - Delete a saved schedule or start it on demand.
     """
 
@@ -195,7 +195,7 @@ class SchedulingTab(QWidget):
         self.source_edit.setPlaceholderText("Choose source folder for scheduled backups…")
         self.btn_browse_source = QPushButton("Browse…")
         self.btn_browse_source.clicked.connect(self._browse_source)
-        source_row.addWidget(QLabel("Source folder:"))
+        source_row.addWidget(QLabel("Current backup source:"))
         source_row.addWidget(self.source_edit, 1)
         source_row.addWidget(self.btn_browse_source)
         schedule_layout.addLayout(source_row)
@@ -229,7 +229,7 @@ class SchedulingTab(QWidget):
         self.compression_combo.addItem("None", "none")
         self.compression_combo.addItem("zip", "zip")
         self.compression_combo.addItem("tar.zst", "tar.zst")
-        compression_row.addWidget(QLabel("Compression:"))
+        compression_row.addWidget(QLabel("Current backup compression:"))
         compression_row.addWidget(self.compression_combo, 1)
         schedule_layout.addLayout(compression_row)
 
@@ -354,7 +354,7 @@ class SchedulingTab(QWidget):
         start_dir = self.source_edit.text().strip() or str(Path.home())
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Select source folder for scheduled backups",
+            "Select current backup source for this job",
             start_dir,
         )
         if directory:
@@ -362,7 +362,7 @@ class SchedulingTab(QWidget):
 
     def _save_schedule(self) -> None:
         """
-        Validate the form and save the schedule for the selected job.
+        Validate the form and save the schedule trigger for the selected job.
         """
         job_id = self._selected_job_id()
         if job_id is None:
@@ -371,7 +371,7 @@ class SchedulingTab(QWidget):
 
         source_root = self.source_edit.text().strip()
         if not source_root:
-            QMessageBox.information(self, "Scheduling", "Choose a source folder first.")
+            QMessageBox.information(self, "Scheduling", "Choose the current backup source first.")
             return
 
         try:
@@ -458,12 +458,19 @@ class SchedulingTab(QWidget):
         Parameters
         ----------
         status:
-            Combined persisted schedule and task state.
+            Combined persisted trigger, task state, and current job-backed
+            backup defaults.
         """
-        self.source_edit.setText(status.schedule.source_root)
+        if status.current_backup_defaults is not None:
+            self.source_edit.setText(status.current_backup_defaults.source_root)
+            self._select_combo_by_data(
+                self.compression_combo, status.current_backup_defaults.compression
+            )
+        else:
+            self.source_edit.setText("")
+            self.compression_combo.setCurrentIndex(0)
         self.start_time_edit.setText(status.schedule.start_time_local)
         self._select_combo_by_data(self.cadence_combo, status.schedule.cadence)
-        self._select_combo_by_data(self.compression_combo, status.schedule.compression)
 
         selected_days = set(status.schedule.weekdays)
         for day_token, check in self._weekday_checks.items():
@@ -489,12 +496,13 @@ class SchedulingTab(QWidget):
 
     def _render_schedule_summary(self, status: ScheduledBackupStatus) -> str:
         """
-        Render the saved schedule and task state for display.
+        Render the saved trigger and task state for display.
 
         Parameters
         ----------
         status:
-            Combined persisted schedule and task state.
+            Combined persisted trigger, task state, and current job-backed
+            backup defaults.
 
         Returns
         -------
@@ -502,16 +510,19 @@ class SchedulingTab(QWidget):
             Human-readable summary text.
         """
         lines: list[str] = []
-        lines.append("SCHEDULE")
+        lines.append("SCHEDULE TRIGGER")
         lines.append(f"  task_name: {status.task_name}")
-        lines.append(f"  source_root: {status.schedule.source_root}")
         lines.append(f"  cadence: {status.schedule.cadence}")
         lines.append(f"  start_time_local: {status.schedule.start_time_local}")
         lines.append(
             f"  weekdays: {','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
         )
-        lines.append(f"  compression: {status.schedule.compression}")
         lines.append(f"  task_exists: {str(status.task_exists).lower()}")
+        if status.current_backup_defaults is not None:
+            lines.append("")
+            lines.append("CURRENT JOB BACKUP DEFAULTS")
+            lines.append(f"  source_root: {status.current_backup_defaults.source_root}")
+            lines.append(f"  compression: {status.current_backup_defaults.compression}")
         if status.scheduler_details:
             lines.append("")
             lines.append("TASK SCHEDULER")

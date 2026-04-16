@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     is_deleted INTEGER NOT NULL DEFAULT 0
 );
 
+-- Transitional Job-shaped carrier for Template-owned selection rules.
 CREATE TABLE IF NOT EXISTS rules (
     job_id   TEXT NOT NULL,
     kind     TEXT NOT NULL CHECK(kind IN ('include','exclude')),
@@ -41,7 +42,18 @@ CREATE TABLE IF NOT EXISTS job_schedules (
     FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
 );
 
+-- Transitional schedule-side carrier. Scheduling does not own these fields.
 CREATE TABLE IF NOT EXISTS scheduled_backup_legacy_inputs (
+    job_id       TEXT PRIMARY KEY,
+    source_root  TEXT NOT NULL,
+    compression  TEXT NOT NULL DEFAULT 'none',
+    FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
+);
+
+-- Transitional Job-shaped carrier for mixed ownership:
+-- source_root remains Job-owned target binding;
+-- compression is Template-owned policy mirrored for compatibility only.
+CREATE TABLE IF NOT EXISTS job_backup_defaults (
     job_id       TEXT PRIMARY KEY,
     source_root  TEXT NOT NULL,
     compression  TEXT NOT NULL DEFAULT 'none',

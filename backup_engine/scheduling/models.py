@@ -11,9 +11,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
 
 from backup_engine.errors import InvalidScheduleError
+
+if TYPE_CHECKING:
+    from backup_engine.profile_store.api import JobBackupDefaults
 
 _WEEKDAY_ORDER: tuple[str, ...] = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 _WEEKDAY_INDEX: dict[str, int] = {day: idx for idx, day in enumerate(_WEEKDAY_ORDER)}
@@ -53,7 +56,9 @@ class ScheduledBackupLegacyDefinition:
     These fields are not owned by the scheduling boundary. They exist only
     because the current scheduled execution path still reads backup-definition
     inputs from persisted schedule state until later boundary corrections remove
-    that dependency.
+    that dependency. ``source_root`` remains Job-owned target binding, while
+    ``compression`` remains Template-owned policy carried here only for
+    compatibility.
     """
 
     source_root: str
@@ -222,6 +227,10 @@ class ScheduledBackupStatus:
         Persisted scheduled-task record. Trigger metadata is authoritative for
         this boundary; any attached legacy definition payload is transitional
         compatibility state only.
+    current_backup_defaults:
+        Current Job-shaped compatibility carrier. These values are shown
+        alongside the trigger for user-facing convenience, but they are not
+        part of the scheduling boundary.
     task_name:
         Derived Windows task name for the job.
     task_exists:
@@ -231,6 +240,7 @@ class ScheduledBackupStatus:
     """
 
     schedule: BackupScheduleSpec
+    current_backup_defaults: JobBackupDefaults | None
     task_name: str
     task_exists: bool
     scheduler_details: Mapping[str, str]

@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from backup_engine.profile_store.api import JobBackupDefaults
 from backup_engine.profile_store.sqlite_store import open_profile_store
 
 from .models import BackupScheduleSpec, ScheduledBackupStatus, normalize_schedule_spec
@@ -84,6 +85,14 @@ def create_or_update_scheduled_backup(
     )
 
     store.save_backup_schedule(normalized)
+    if normalized.legacy_definition is not None:
+        store.save_job_backup_defaults(
+            normalized.job_id,
+            JobBackupDefaults(
+                source_root=normalized.source_root,
+                compression=normalized.compression,
+            ),
+        )
     (backend or SchtasksBackend()).create_task(
         task_name=task_name,
         task_command=task_command,
@@ -123,15 +132,18 @@ def query_scheduled_backup(
     Returns
     -------
     ScheduledBackupStatus
-        Persisted scheduled-task record plus current Windows task presence
-        details.
+        Persisted scheduled-task trigger plus current Windows task presence
+        details, with current job-backed backup defaults attached only for
+        user-facing convenience.
     """
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
     schedule = store.load_backup_schedule(job_id)
+    current_backup_defaults = store.load_job_backup_defaults(job_id)
     task_name = scheduled_task_name(profile_name=profile_name, job_id=job_id)
     task_info = (backend or SchtasksBackend()).query_task(task_name=task_name)
     return ScheduledBackupStatus(
         schedule=schedule,
+        current_backup_defaults=current_backup_defaults,
         task_name=task_name,
         task_exists=task_info.exists,
         scheduler_details=dict(task_info.details),
@@ -197,9 +209,9 @@ def load_scheduled_backup_run_request(
     profile_name: str,
     data_root: Path | None,
     job_id: str,
-) -> tuple[BackupScheduleSpec, str | None]:
+) -> tuple[JobBackupDefaults, str | None]:
     """
-    Load the persisted scheduled-task record and current job name for a scheduled run.
+    Load the current job-backed backup defaults and job name for a scheduled run.
 
     Parameters
     ----------
@@ -212,21 +224,21 @@ def load_scheduled_backup_run_request(
 
     Returns
     -------
-    tuple[BackupScheduleSpec, str | None]
-        The persisted scheduled-task record and current display name if present.
+    tuple[JobBackupDefaults, str | None]
+        The current backup defaults and current display name if present.
 
     Notes
     -----
-    This function still exposes compatibility backup-definition inputs because
-    the current scheduled execution path has not yet been realigned. The
-    scheduler itself remains a trigger-only boundary.
+    Scheduled execution must resolve its backup meaning from the current live
+    job-backed defaults rather than from schedule-carried definition data. The
+    scheduler remains a trigger-only boundary.
     """
     store = open_profile_store(profile_name=profile_name, data_root=data_root)
-    schedule = store.load_backup_schedule(job_id)
+    defaults = store.load_job_backup_defaults(job_id)
     job_name = next(
         (summary.name for summary in store.list_jobs() if summary.job_id == job_id), None
     )
-    return schedule, job_name
+    return defaults, job_name
 
 
 def _build_scheduled_backup_command(

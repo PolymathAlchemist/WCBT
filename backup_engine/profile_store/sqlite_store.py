@@ -3,6 +3,13 @@ SQLite implementation of ProfileStore.
 
 This module owns the on-disk persistence format for per-job authoring rules.
 
+Notes
+-----
+Template is the authoritative owner of selection rules and compression policy.
+This store still persists Job-shaped compatibility carriers for those fields so
+current runtime and authoring paths remain stable during the boundary
+introduction sequence.
+
 Threading
 ---------
 sqlite3 connections are not shared across threads in this implementation. If the
@@ -21,7 +28,7 @@ from typing import Final, Sequence
 from backup_engine.scheduling.models import BackupScheduleSpec, normalize_schedule_spec
 
 from ..paths_and_safety import ProfilePaths, ensure_profile_directories, resolve_profile_paths
-from .api import JobId, JobSummary, ProfileStore, RuleSet
+from .api import JobBackupDefaults, JobId, JobSummary, ProfileStore, RuleSet
 from .errors import InvalidRuleError, UnknownJobError
 from .rules import normalize_rules
 from .schema import SCHEMA_V1
@@ -116,6 +123,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS scheduled_backup_legacy_inputs ("
+        "job_id TEXT PRIMARY KEY, "
+        "source_root TEXT NOT NULL, "
+        "compression TEXT NOT NULL DEFAULT 'none', "
+        "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS job_backup_defaults ("
         "job_id TEXT PRIMARY KEY, "
         "source_root TEXT NOT NULL, "
         "compression TEXT NOT NULL DEFAULT 'none', "
@@ -339,7 +353,8 @@ class SqliteProfileStore(ProfileStore):
         BackupScheduleSpec
             Persisted scheduled-task record with trigger metadata plus any
             transitional compatibility payload still required by the current
-            scheduled execution path.
+            scheduled execution path. Any attached ``compression`` value remains
+            Template-owned policy mirrored here for compatibility only.
 
         Raises
         ------
@@ -350,11 +365,11 @@ class SqliteProfileStore(ProfileStore):
             _ensure_schema(conn)
             row = conn.execute(
                 "SELECT js.job_id, js.cadence, js.start_time_local, js.weekdays, "
-                "legacy.source_root AS legacy_source_root, "
-                "legacy.compression AS legacy_compression "
+                "job_defaults.source_root AS job_source_root, "
+                "job_defaults.compression AS job_compression "
                 "FROM job_schedules js "
                 "JOIN jobs j ON j.job_id = js.job_id "
-                "LEFT JOIN scheduled_backup_legacy_inputs legacy ON legacy.job_id = js.job_id "
+                "LEFT JOIN job_backup_defaults job_defaults ON job_defaults.job_id = js.job_id "
                 "WHERE js.job_id = ? AND j.is_deleted = 0",
                 (job_id,),
             ).fetchone()
@@ -372,8 +387,8 @@ class SqliteProfileStore(ProfileStore):
 
         weekdays_raw = str(row["weekdays"]) if row["weekdays"] is not None else ""
         weekdays = tuple(part for part in weekdays_raw.split(",") if part)
-        source_root_value = row["legacy_source_root"]
-        compression_value = row["legacy_compression"]
+        source_root_value = row["job_source_root"]
+        compression_value = row["job_compression"]
 
         if source_root_value is None and fallback_row is not None:
             source_root_value = fallback_row["source_root"]
@@ -400,7 +415,9 @@ class SqliteProfileStore(ProfileStore):
         schedule:
             Scheduled-task record to persist. The scheduling boundary owns the
             trigger metadata only; any backup-definition payload remains
-            compatibility state until later refactor steps remove it.
+            compatibility state until later refactor steps remove it. In that
+            payload, ``source_root`` remains Job-owned target binding and
+            ``compression`` remains Template-owned policy.
 
         Raises
         ------
@@ -433,6 +450,19 @@ class SqliteProfileStore(ProfileStore):
             )
 
             conn.execute(
+                "INSERT INTO job_backup_defaults(job_id, source_root, compression) "
+                "VALUES(?, ?, ?) "
+                "ON CONFLICT(job_id) DO UPDATE SET "
+                "source_root = excluded.source_root, "
+                "compression = excluded.compression",
+                (
+                    normalized.job_id,
+                    normalized.source_root,
+                    normalized.compression,
+                ),
+            )
+
+            conn.execute(
                 "INSERT INTO scheduled_backup_legacy_inputs(job_id, source_root, compression) "
                 "VALUES(?, ?, ?) "
                 "ON CONFLICT(job_id) DO UPDATE SET "
@@ -458,6 +488,60 @@ class SqliteProfileStore(ProfileStore):
             _ensure_schema(conn)
             conn.execute("DELETE FROM scheduled_backup_legacy_inputs WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM job_schedules WHERE job_id = ?", (job_id,))
+
+    def load_job_backup_defaults(self, job_id: JobId) -> JobBackupDefaults:
+        """
+        Load the current Job-shaped compatibility carrier for backup inputs.
+        """
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            row = conn.execute(
+                "SELECT defaults.source_root, defaults.compression "
+                "FROM job_backup_defaults defaults "
+                "JOIN jobs j ON j.job_id = defaults.job_id "
+                "WHERE defaults.job_id = ? AND j.is_deleted = 0",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT source_root, compression FROM scheduled_backup_legacy_inputs "
+                    "WHERE job_id = ?",
+                    (job_id,),
+                ).fetchone()
+            if row is None:
+                raise UnknownJobError(f"No backup defaults found for job_id: {job_id}")
+
+        return JobBackupDefaults(
+            source_root=str(row["source_root"]),
+            compression=str(row["compression"]),
+        )
+
+    def save_job_backup_defaults(self, job_id: JobId, defaults: JobBackupDefaults) -> None:
+        """
+        Persist the current Job-shaped compatibility carrier for backup inputs.
+
+        Notes
+        -----
+        This storage path is transitional. ``source_root`` remains Job-owned
+        target binding, and ``compression`` remains Template-owned policy.
+        """
+        with self._connect() as conn:
+            _ensure_schema(conn)
+            job = conn.execute(
+                "SELECT job_id FROM jobs WHERE job_id = ? AND is_deleted = 0",
+                (job_id,),
+            ).fetchone()
+            if job is None:
+                raise UnknownJobError(f"Unknown job_id: {job_id}")
+
+            conn.execute(
+                "INSERT INTO job_backup_defaults(job_id, source_root, compression) "
+                "VALUES(?, ?, ?) "
+                "ON CONFLICT(job_id) DO UPDATE SET "
+                "source_root = excluded.source_root, "
+                "compression = excluded.compression",
+                (job_id, defaults.source_root, defaults.compression),
+            )
 
 
 def open_profile_store(profile_name: str, data_root: Path | None = None) -> SqliteProfileStore:

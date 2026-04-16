@@ -6,6 +6,7 @@ import pytest
 
 import wcbt.cli as cli_module
 from backup_engine.errors import InvalidScheduleError
+from backup_engine.profile_store.api import JobBackupDefaults
 from backup_engine.scheduling.models import BackupScheduleSpec, ScheduledBackupStatus
 
 
@@ -65,6 +66,10 @@ def test_cli_schedule_create_prints_summary(
         assert isinstance(schedule, BackupScheduleSpec)
         return ScheduledBackupStatus(
             schedule=schedule,
+            current_backup_defaults=JobBackupDefaults(
+                source_root="C:/tmp/source",
+                compression="none",
+            ),
             task_name="WCBT-default-job1",
             task_exists=True,
             scheduler_details={},
@@ -116,15 +121,11 @@ def test_cli_scheduled_backup_uses_saved_schedule(monkeypatch: pytest.MonkeyPatc
 
     def _load_scheduled_backup_run_request(
         **kwargs: object,
-    ) -> tuple[BackupScheduleSpec, str | None]:
+    ) -> tuple[JobBackupDefaults, str | None]:
         del kwargs
         return (
-            BackupScheduleSpec(
-                job_id="job1",
+            JobBackupDefaults(
                 source_root="C:/tmp/source",
-                cadence="daily",
-                start_time_local="06:30",
-                weekdays=(),
                 compression="zip",
             ),
             "My Job",
