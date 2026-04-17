@@ -904,7 +904,7 @@ def _resolve_backup_note(*, backup_origin: str, backup_note: str | None) -> str 
             return normalized_note
 
     auto_notes = {
-        "scheduled": "Scheduled backup executed by scheduler",
+        "scheduled": "Scheduled backup executed by Windows Task Scheduler",
         "pre_restore": "Pre-restore safety backup executed by restore workflow",
     }
     return auto_notes.get(backup_origin)

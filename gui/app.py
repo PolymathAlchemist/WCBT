@@ -166,6 +166,8 @@ class AppWindow(QWidget):
             return
         if self.tabs.widget(index) is self.restore_tab:
             self.restore_tab.refresh_on_activate()
+        if self.tabs.widget(index) is self.scheduling_tab:
+            self.scheduling_tab.refresh_on_activate()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """

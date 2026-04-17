@@ -44,9 +44,11 @@ CREATE TABLE IF NOT EXISTS template_backup_policy (
 
 CREATE TABLE IF NOT EXISTS job_schedules (
     job_id            TEXT PRIMARY KEY,
-    cadence           TEXT NOT NULL CHECK(cadence IN ('daily','weekly')),
+    cadence           TEXT NOT NULL CHECK(cadence IN ('daily','weekly','interval')),
     start_time_local  TEXT NOT NULL,
     weekdays          TEXT NULL,
+    interval_unit     TEXT NULL,
+    interval_value    INTEGER NULL,
     FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE
 );
 """

@@ -7,14 +7,12 @@ backup triggers for existing jobs.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,11 +20,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from backup_engine.errors import InvalidScheduleError
 from backup_engine.profile_store.errors import UnknownJobError
+from backup_engine.profile_store.sqlite_store import open_profile_store
 from backup_engine.scheduling.models import (
     BackupScheduleSpec,
     ScheduledBackupStatus,
@@ -37,8 +38,10 @@ from backup_engine.scheduling.service import (
     delete_scheduled_backup,
     query_scheduled_backup,
     run_scheduled_backup_now,
+    set_scheduled_backup_enabled,
 )
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
+from gui.settings_store import load_gui_settings
 
 
 def _mono() -> QFont:
@@ -62,8 +65,24 @@ class SchedulingWorker(QObject):
     schedule_saved = Signal(object)  # ScheduledBackupStatus
     schedule_deleted = Signal(str)  # job_id
     schedule_started = Signal(str)  # job_id
+    schedule_state_changed = Signal(object)  # ScheduledBackupStatus
     schedule_missing = Signal(str)  # job_id
     failed = Signal(str)
+
+    def __init__(self, *, profile_name: str, data_root) -> None:
+        """
+        Initialize the worker with the active profile-store context.
+
+        Parameters
+        ----------
+        profile_name : str
+            Active profile name used for scheduling operations.
+        data_root : Path | None
+            Active profile-store data root from GUI settings.
+        """
+        super().__init__()
+        self._profile_name = profile_name
+        self._data_root = data_root
 
     @Slot(str)
     def load_schedule(self, job_id: str) -> None:
@@ -76,7 +95,11 @@ class SchedulingWorker(QObject):
             Stable job identifier.
         """
         try:
-            status = query_scheduled_backup(profile_name="default", data_root=None, job_id=job_id)
+            status = query_scheduled_backup(
+                profile_name=self._profile_name,
+                data_root=self._data_root,
+                job_id=job_id,
+            )
         except UnknownJobError:
             self.schedule_missing.emit(job_id)
             return
@@ -99,8 +122,8 @@ class SchedulingWorker(QObject):
             schedule = schedule_obj
             assert isinstance(schedule, BackupScheduleSpec)
             status = create_or_update_scheduled_backup(
-                profile_name="default",
-                data_root=None,
+                profile_name=self._profile_name,
+                data_root=self._data_root,
                 schedule=schedule,
             )
         except Exception as exc:
@@ -119,7 +142,11 @@ class SchedulingWorker(QObject):
             Stable job identifier.
         """
         try:
-            delete_scheduled_backup(profile_name="default", data_root=None, job_id=job_id)
+            delete_scheduled_backup(
+                profile_name=self._profile_name,
+                data_root=self._data_root,
+                job_id=job_id,
+            )
         except Exception as exc:
             self.failed.emit(str(exc))
             return
@@ -136,11 +163,39 @@ class SchedulingWorker(QObject):
             Stable job identifier.
         """
         try:
-            run_scheduled_backup_now(profile_name="default", data_root=None, job_id=job_id)
+            run_scheduled_backup_now(
+                profile_name=self._profile_name,
+                data_root=self._data_root,
+                job_id=job_id,
+            )
         except Exception as exc:
             self.failed.emit(str(exc))
             return
         self.schedule_started.emit(job_id)
+
+    @Slot(str, bool)
+    def set_schedule_enabled(self, job_id: str, enabled: bool) -> None:
+        """
+        Enable or disable the scheduled task for a job.
+
+        Parameters
+        ----------
+        job_id:
+            Stable job identifier.
+        enabled:
+            Desired task enabled state.
+        """
+        try:
+            status = set_scheduled_backup_enabled(
+                profile_name=self._profile_name,
+                data_root=self._data_root,
+                job_id=job_id,
+                enabled=enabled,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.schedule_state_changed.emit(status)
 
 
 class SchedulingTab(QWidget):
@@ -159,19 +214,28 @@ class SchedulingTab(QWidget):
         Initialize the scheduling tab and background workers.
         """
         super().__init__()
+        self._profile_name = "default"
+        self._settings = load_gui_settings(data_root=None)
         self._has_schedule = False
 
-        self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
+        self._store = ProfileStoreAdapter(
+            profile_name=self._profile_name,
+            data_root=self._settings.data_root,
+        )
         self._store.jobs_loaded.connect(self._on_jobs_loaded)
         self._store.error.connect(self._on_store_error)
 
         self._thread = QThread(self)
-        self._worker = SchedulingWorker()
+        self._worker = SchedulingWorker(
+            profile_name=self._profile_name,
+            data_root=self._settings.data_root,
+        )
         self._worker.moveToThread(self._thread)
         self._worker.schedule_loaded.connect(self._on_schedule_loaded)
         self._worker.schedule_saved.connect(self._on_schedule_saved)
         self._worker.schedule_deleted.connect(self._on_schedule_deleted)
         self._worker.schedule_started.connect(self._on_schedule_started)
+        self._worker.schedule_state_changed.connect(self._on_schedule_state_changed)
         self._worker.schedule_missing.connect(self._on_schedule_missing)
         self._worker.failed.connect(self._on_worker_failed)
         self._thread.start()
@@ -192,18 +256,17 @@ class SchedulingTab(QWidget):
 
         source_row = QHBoxLayout()
         self.source_edit = QLineEdit()
-        self.source_edit.setPlaceholderText("Choose source folder for scheduled backups…")
-        self.btn_browse_source = QPushButton("Browse…")
-        self.btn_browse_source.clicked.connect(self._browse_source)
-        source_row.addWidget(QLabel("Current backup source:"))
+        self.source_edit.setReadOnly(True)
+        self.source_edit.setPlaceholderText("Current job source is shown here.")
+        source_row.addWidget(QLabel("Current job source:"))
         source_row.addWidget(self.source_edit, 1)
-        source_row.addWidget(self.btn_browse_source)
         schedule_layout.addLayout(source_row)
 
         cadence_row = QHBoxLayout()
         self.cadence_combo = QComboBox()
         self.cadence_combo.addItem("Daily", "daily")
         self.cadence_combo.addItem("Weekly", "weekly")
+        self.cadence_combo.addItem("Interval", "interval")
         self.cadence_combo.currentIndexChanged.connect(self._sync_weekday_enabled_state)
         self.start_time_edit = QLineEdit()
         self.start_time_edit.setPlaceholderText("HH:MM")
@@ -224,13 +287,25 @@ class SchedulingTab(QWidget):
         weekday_row.addStretch(1)
         schedule_layout.addLayout(weekday_row)
 
+        interval_row = QHBoxLayout()
+        interval_row.addWidget(QLabel("Repeat every:"))
+        self.interval_value_spin = QSpinBox()
+        self.interval_value_spin.setRange(1, 999)
+        self.interval_value_spin.setValue(10)
+        self.interval_unit_combo = QComboBox()
+        self.interval_unit_combo.addItem("Minutes", "minutes")
+        self.interval_unit_combo.addItem("Hours", "hours")
+        interval_row.addWidget(self.interval_value_spin)
+        interval_row.addWidget(self.interval_unit_combo)
+        interval_row.addStretch(1)
+        schedule_layout.addLayout(interval_row)
+
         compression_row = QHBoxLayout()
-        self.compression_combo = QComboBox()
-        self.compression_combo.addItem("None", "none")
-        self.compression_combo.addItem("zip", "zip")
-        self.compression_combo.addItem("tar.zst", "tar.zst")
-        compression_row.addWidget(QLabel("Current backup compression:"))
-        compression_row.addWidget(self.compression_combo, 1)
+        self.compression_edit = QLineEdit()
+        self.compression_edit.setReadOnly(True)
+        self.compression_edit.setPlaceholderText("Current template compression is shown here.")
+        compression_row.addWidget(QLabel("Current template compression:"))
+        compression_row.addWidget(self.compression_edit, 1)
         schedule_layout.addLayout(compression_row)
 
         action_row = QHBoxLayout()
@@ -240,13 +315,22 @@ class SchedulingTab(QWidget):
         self.btn_save.clicked.connect(self._save_schedule)
         self.btn_delete = QPushButton("Delete Schedule")
         self.btn_delete.clicked.connect(self._delete_schedule)
+        self.btn_enable = QPushButton("Enable Task")
+        self.btn_enable.clicked.connect(self._enable_schedule)
+        self.btn_disable = QPushButton("Disable Task")
+        self.btn_disable.clicked.connect(self._disable_schedule)
         self.btn_run_now = QPushButton("Run Now")
         self.btn_run_now.clicked.connect(self._run_schedule_now)
+        self.btn_copy_task_query = QPushButton("Copy Task Query")
+        self.btn_copy_task_query.clicked.connect(self._copy_task_query_command)
         action_row.addWidget(self.btn_refresh)
         action_row.addStretch(1)
         action_row.addWidget(self.btn_save)
         action_row.addWidget(self.btn_delete)
+        action_row.addWidget(self.btn_enable)
+        action_row.addWidget(self.btn_disable)
         action_row.addWidget(self.btn_run_now)
+        action_row.addWidget(self.btn_copy_task_query)
         schedule_layout.addLayout(action_row)
 
         outer.addWidget(schedule_box)
@@ -285,7 +369,9 @@ class SchedulingTab(QWidget):
         self.source_edit.setText("")
         self.cadence_combo.setCurrentIndex(0)
         self.start_time_edit.setText("06:30")
-        self.compression_combo.setCurrentIndex(0)
+        self.compression_edit.setText("")
+        self.interval_value_spin.setValue(10)
+        self.interval_unit_combo.setCurrentIndex(0)
         for check in self._weekday_checks.values():
             check.setChecked(False)
 
@@ -317,13 +403,77 @@ class SchedulingTab(QWidget):
             day_token for day_token, check in self._weekday_checks.items() if check.isChecked()
         )
 
+    def _load_current_job_defaults(self, job_id: str) -> None:
+        """
+        Load current Job/Template state for a job without requiring a schedule.
+
+        Parameters
+        ----------
+        job_id:
+            Stable job identifier.
+        """
+        store = open_profile_store(
+            profile_name=self._profile_name,
+            data_root=self._settings.data_root,
+        )
+        binding = store.load_job_binding(job_id)
+        compression = store.load_template_compression(job_id)
+        self.source_edit.setText(binding.source_root)
+        self.compression_edit.setText(compression)
+
+    def _resolve_selected_job_defaults(self) -> tuple[str, str]:
+        """
+        Return authoritative Job/Template inputs for the selected job.
+
+        Returns
+        -------
+        tuple[str, str]
+            Current job source root and current template compression.
+
+        Raises
+        ------
+        InvalidScheduleError
+            If the selected job is missing required authored state.
+        UnknownJobError
+            If the selected job no longer exists.
+        """
+        job_id = self._selected_job_id()
+        if job_id is None:
+            raise InvalidScheduleError("Select a job first.")
+
+        store = open_profile_store(
+            profile_name=self._profile_name,
+            data_root=self._settings.data_root,
+        )
+        binding = store.load_job_binding(job_id)
+        compression = store.load_template_compression(job_id)
+        source_root = binding.source_root.strip()
+        if not source_root:
+            raise InvalidScheduleError("Set the job source in Authoring before saving a schedule.")
+        return source_root, compression
+
+    def refresh_on_activate(self) -> None:
+        """
+        Refresh the available job list when the tab becomes active.
+
+        Notes
+        -----
+        The Scheduling tab stays mounted while jobs can be created or renamed in
+        Authoring. Refreshing on activation keeps the selector current without
+        redesigning the scheduling flow.
+        """
+        self._store.request_list_jobs.emit()
+
     def _sync_weekday_enabled_state(self) -> None:
         """
         Enable or disable weekday controls based on cadence.
         """
         weekly_enabled = str(self.cadence_combo.currentData()) == "weekly"
+        interval_enabled = str(self.cadence_combo.currentData()) == "interval"
         for check in self._weekday_checks.values():
             check.setEnabled(weekly_enabled)
+        self.interval_value_spin.setEnabled(interval_enabled)
+        self.interval_unit_combo.setEnabled(interval_enabled)
 
     def _sync_action_enabled_state(self) -> None:
         """
@@ -333,7 +483,10 @@ class SchedulingTab(QWidget):
         self.btn_refresh.setEnabled(has_job)
         self.btn_save.setEnabled(has_job)
         self.btn_delete.setEnabled(has_job and self._has_schedule)
+        self.btn_enable.setEnabled(has_job and self._has_schedule)
+        self.btn_disable.setEnabled(has_job and self._has_schedule)
         self.btn_run_now.setEnabled(has_job and self._has_schedule)
+        self.btn_copy_task_query.setEnabled(has_job)
 
     def _refresh_current_job(self) -> None:
         """
@@ -342,6 +495,11 @@ class SchedulingTab(QWidget):
         job_id = self._selected_job_id()
         if job_id is None:
             return
+        try:
+            self._load_current_job_defaults(job_id)
+        except UnknownJobError:
+            self.source_edit.setText("")
+            self.compression_edit.setText("")
         self.status_label.setText("Loading schedule…")
         QMetaObject.invokeMethod(
             self._worker,
@@ -349,16 +507,6 @@ class SchedulingTab(QWidget):
             Qt.ConnectionType.QueuedConnection,
             job_id,
         )
-
-    def _browse_source(self) -> None:
-        start_dir = self.source_edit.text().strip() or str(Path.home())
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Select current backup source for this job",
-            start_dir,
-        )
-        if directory:
-            self.source_edit.setText(directory)
 
     def _save_schedule(self) -> None:
         """
@@ -369,11 +517,25 @@ class SchedulingTab(QWidget):
             QMessageBox.information(self, "Scheduling", "Select a job first.")
             return
 
-        source_root = self.source_edit.text().strip()
-        if not source_root:
-            QMessageBox.information(self, "Scheduling", "Choose the current backup source first.")
+        try:
+            source_root, compression = self._resolve_selected_job_defaults()
+        except (InvalidScheduleError, UnknownJobError) as exc:
+            QMessageBox.information(self, "Scheduling", str(exc))
             return
-
+        try:
+            cadence = str(self.cadence_combo.currentData())
+            interval_unit = None
+            interval_value = None
+            if cadence == "interval":
+                interval_unit = str(self.interval_unit_combo.currentData())
+                interval_value = int(self.interval_value_spin.value())
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Scheduling",
+                "Invalid interval settings.",
+            )
+            return
         try:
             start_time_local = normalize_start_time_local(self.start_time_edit.text())
         except Exception:
@@ -384,7 +546,6 @@ class SchedulingTab(QWidget):
             )
             return
 
-        cadence = str(self.cadence_combo.currentData())
         weekdays = self._selected_weekdays()
         if cadence == "weekly" and not weekdays:
             QMessageBox.warning(
@@ -400,7 +561,9 @@ class SchedulingTab(QWidget):
             cadence=cadence,
             start_time_local=start_time_local,
             weekdays=weekdays,
-            compression=str(self.compression_combo.currentData()),
+            compression=compression,
+            interval_unit=interval_unit,
+            interval_value=interval_value,
         )
 
         self.status_label.setText("Saving schedule…")
@@ -451,6 +614,69 @@ class SchedulingTab(QWidget):
             job_id,
         )
 
+    def _enable_schedule(self) -> None:
+        """
+        Enable the selected job's scheduled task.
+        """
+        self._set_schedule_enabled(True)
+
+    def _disable_schedule(self) -> None:
+        """
+        Disable the selected job's scheduled task.
+        """
+        self._set_schedule_enabled(False)
+
+    def _set_schedule_enabled(self, enabled: bool) -> None:
+        """
+        Update the selected job's scheduled task state.
+
+        Parameters
+        ----------
+        enabled:
+            Desired enabled state.
+        """
+        job_id = self._selected_job_id()
+        if job_id is None or not self._has_schedule:
+            return
+
+        self.status_label.setText("Updating task state…")
+        QMetaObject.invokeMethod(
+            self._worker,
+            "set_schedule_enabled",
+            Qt.ConnectionType.QueuedConnection,
+            job_id,
+            enabled,
+        )
+
+    def _task_query_command(self, job_id: str) -> str:
+        """
+        Build the exact ``schtasks`` query command for one selected job.
+
+        Parameters
+        ----------
+        job_id:
+            Stable WCBT job identifier.
+
+        Returns
+        -------
+        str
+            Windows command-line query for the backing scheduled task.
+        """
+        task_name = f"WCBT-{self._profile_name}-{job_id}"
+        return f'schtasks /query /tn "{task_name}" /fo LIST /v'
+
+    def _copy_task_query_command(self) -> None:
+        """
+        Copy the exact Task Scheduler query command for the selected job.
+        """
+        job_id = self._selected_job_id()
+        if job_id is None:
+            QMessageBox.information(self, "Scheduling", "Select a job first.")
+            return
+
+        QApplication.clipboard().setText(self._task_query_command(job_id))
+        self.status_label.setText("Task query copied.")
+
     def _apply_schedule_to_form(self, status: ScheduledBackupStatus) -> None:
         """
         Load a saved schedule into the form widgets.
@@ -463,11 +689,14 @@ class SchedulingTab(QWidget):
         """
         self.source_edit.setText(status.current_job_binding.source_root)
         if status.current_template_compression is not None:
-            self._select_combo_by_data(self.compression_combo, status.current_template_compression)
+            self.compression_edit.setText(status.current_template_compression)
         else:
-            self.compression_combo.setCurrentIndex(0)
+            self.compression_edit.setText("")
         self.start_time_edit.setText(status.schedule.start_time_local)
         self._select_combo_by_data(self.cadence_combo, status.schedule.cadence)
+        self.interval_value_spin.setValue(status.schedule.interval_value or 10)
+        if status.schedule.interval_unit is not None:
+            self._select_combo_by_data(self.interval_unit_combo, status.schedule.interval_unit)
 
         selected_days = set(status.schedule.weekdays)
         for day_token, check in self._weekday_checks.items():
@@ -509,12 +738,21 @@ class SchedulingTab(QWidget):
         lines: list[str] = []
         lines.append("SCHEDULE TRIGGER")
         lines.append(f"  task_name: {status.task_name}")
+        lines.append(f"  task_query: {self._task_query_command(status.schedule.job_id)}")
         lines.append(f"  cadence: {status.schedule.cadence}")
         lines.append(f"  start_time_local: {status.schedule.start_time_local}")
+        if status.schedule.cadence == "interval":
+            lines.append(
+                f"  interval: {status.schedule.interval_value} {status.schedule.interval_unit}"
+            )
         lines.append(
             f"  weekdays: {','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
         )
+        lines.append(f"  wrapper_path: {status.wrapper_path}")
+        lines.append(f"  wrapper_exists: {str(status.wrapper_exists).lower()}")
         lines.append(f"  task_exists: {str(status.task_exists).lower()}")
+        if status.task_enabled is not None:
+            lines.append(f"  task_enabled: {str(status.task_enabled).lower()}")
         lines.append("")
         lines.append("CURRENT JOB BINDING")
         lines.append(f"  job_id: {status.current_job_binding.job_id}")
@@ -661,6 +899,25 @@ class SchedulingTab(QWidget):
         self.status_label.setText("Scheduled task started.")
         QMessageBox.information(self, "Scheduling", "Scheduled task started.")
 
+    def _on_schedule_state_changed(self, status_obj: object) -> None:
+        """
+        Refresh the UI after the task enabled state changes.
+
+        Parameters
+        ----------
+        status_obj:
+            Updated schedule payload from the worker.
+        """
+        self._on_schedule_loaded(status_obj)
+        status = status_obj
+        assert isinstance(status, ScheduledBackupStatus)
+        if status.task_enabled is True:
+            self.status_label.setText("Scheduled task enabled.")
+        elif status.task_enabled is False:
+            self.status_label.setText("Scheduled task disabled.")
+        else:
+            self.status_label.setText("Scheduled task state updated.")
+
     def _on_schedule_missing(self, job_id: str) -> None:
         """
         Show the empty state when a job has no saved schedule.
@@ -674,9 +931,14 @@ class SchedulingTab(QWidget):
             return
         self._has_schedule = False
         self._set_default_form_values()
+        self._load_current_job_defaults(job_id)
         self._sync_weekday_enabled_state()
-        self.summary.setPlainText("No schedule saved for this job.")
-        self.status_label.setText("No schedule saved.")
+        self.summary.setPlainText(
+            "No schedule saved for this job.\n"
+            "\n"
+            "Current job source and template compression were resolved from Authoring."
+        )
+        self.status_label.setText("Ready to save schedule.")
         self._sync_action_enabled_state()
 
     def _on_worker_failed(self, message: str) -> None:

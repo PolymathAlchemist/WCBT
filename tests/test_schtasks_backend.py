@@ -50,7 +50,7 @@ def test_create_task_builds_daily_command() -> None:
     backend = SchtasksBackend(runner=_runner)
     backend.create_task(
         task_name="WCBT-default-job1",
-        task_command='"C:\\Python\\python.exe" -m wcbt scheduled-backup --profile default --job-id job1',
+        task_command='cmd.exe /c "C:\\scheduled wrappers\\job1.bat"',
         cadence="daily",
         start_time_local="06:30",
         weekdays=(),
@@ -64,7 +64,7 @@ def test_create_task_builds_daily_command() -> None:
             "/tn",
             "WCBT-default-job1",
             "/tr",
-            '"C:\\Python\\python.exe" -m wcbt scheduled-backup --profile default --job-id job1',
+            'cmd.exe /c "C:\\scheduled wrappers\\job1.bat"',
             "/sc",
             "DAILY",
             "/st",
@@ -74,6 +74,22 @@ def test_create_task_builds_daily_command() -> None:
             "LIMITED",
         ]
     ]
+
+
+def test_set_task_enabled_builds_change_command() -> None:
+    seen: list[list[str]] = []
+
+    def _runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        command = args[0]
+        assert isinstance(command, Iterable)
+        seen.append([str(part) for part in command])
+        return _completed(stdout="SUCCESS")
+
+    backend = SchtasksBackend(runner=_runner)
+    backend.set_task_enabled(task_name="WCBT-default-job1", enabled=False)
+
+    assert seen == [["schtasks", "/change", "/tn", "WCBT-default-job1", "/disable"]]
 
 
 def test_create_task_builds_weekly_day_list() -> None:
@@ -96,6 +112,49 @@ def test_create_task_builds_weekly_day_list() -> None:
     )
 
     assert seen[0][-2:] == ["/d", "MON,FRI"]
+
+
+def test_create_task_builds_interval_minute_command() -> None:
+    seen: list[list[str]] = []
+
+    def _runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        command = args[0]
+        assert isinstance(command, Iterable)
+        seen.append([str(part) for part in command])
+        return _completed(stdout="SUCCESS")
+
+    backend = SchtasksBackend(runner=_runner)
+    backend.create_task(
+        task_name="WCBT-default-job1",
+        task_command="python -m wcbt scheduled-backup",
+        cadence="interval",
+        start_time_local="08:15",
+        weekdays=(),
+        interval_unit="minutes",
+        interval_value=10,
+    )
+
+    assert seen == [
+        [
+            "schtasks",
+            "/create",
+            "/f",
+            "/tn",
+            "WCBT-default-job1",
+            "/tr",
+            "python -m wcbt scheduled-backup",
+            "/sc",
+            "MINUTE",
+            "/mo",
+            "10",
+            "/st",
+            "08:15",
+            "/it",
+            "/rl",
+            "LIMITED",
+        ]
+    ]
 
 
 def test_query_task_parses_verbose_output() -> None:
@@ -143,5 +202,5 @@ def test_backend_raises_generic_error_for_other_failures() -> None:
         runner=lambda *args, **kwargs: _completed(returncode=1, stderr="ERROR: Access is denied.")
     )
 
-    with pytest.raises(SchedulingBackendError):
+    with pytest.raises(SchedulingBackendError, match="schtasks command failed:"):
         backend.run_task(task_name="WCBT-default-job1")

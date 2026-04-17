@@ -158,11 +158,34 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS job_schedules ("
         "job_id TEXT PRIMARY KEY, "
-        "cadence TEXT NOT NULL CHECK(cadence IN ('daily','weekly')), "
+        "cadence TEXT NOT NULL CHECK(cadence IN ('daily','weekly','interval')), "
         "start_time_local TEXT NOT NULL, "
         "weekdays TEXT NULL, "
+        "interval_unit TEXT NULL, "
+        "interval_value INTEGER NULL, "
         "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)"
     )
+    schedule_columns = {
+        str(row["name"]) for row in conn.execute("PRAGMA table_info(job_schedules)").fetchall()
+    }
+    if "interval_unit" not in schedule_columns or "interval_value" not in schedule_columns:
+        conn.execute("ALTER TABLE job_schedules RENAME TO job_schedules_legacy")
+        conn.execute(
+            "CREATE TABLE job_schedules ("
+            "job_id TEXT PRIMARY KEY, "
+            "cadence TEXT NOT NULL CHECK(cadence IN ('daily','weekly','interval')), "
+            "start_time_local TEXT NOT NULL, "
+            "weekdays TEXT NULL, "
+            "interval_unit TEXT NULL, "
+            "interval_value INTEGER NULL, "
+            "FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE CASCADE)"
+        )
+        conn.execute(
+            "INSERT INTO job_schedules(job_id, cadence, start_time_local, weekdays, interval_unit, interval_value) "
+            "SELECT job_id, cadence, start_time_local, weekdays, NULL, NULL "
+            "FROM job_schedules_legacy"
+        )
+        conn.execute("DROP TABLE job_schedules_legacy")
     # Ensure jobs has is_deleted column for soft deletion.
     cols = conn.execute("PRAGMA table_info(jobs)").fetchall()
     col_names = {str(r["name"]) for r in cols}
@@ -613,7 +636,8 @@ class SqliteProfileStore(ProfileStore):
         with self._connect() as conn:
             _ensure_schema(conn)
             row = conn.execute(
-                "SELECT js.job_id, js.cadence, js.start_time_local, js.weekdays "
+                "SELECT js.job_id, js.cadence, js.start_time_local, js.weekdays, "
+                "js.interval_unit, js.interval_value "
                 "FROM job_schedules js "
                 "JOIN jobs j ON j.job_id = js.job_id "
                 "WHERE js.job_id = ? AND j.is_deleted = 0",
@@ -635,6 +659,12 @@ class SqliteProfileStore(ProfileStore):
                 start_time_local=str(row["start_time_local"]),
                 weekdays=weekdays,
                 compression=str(compression_value or ""),
+                interval_unit=(
+                    str(row["interval_unit"]) if row["interval_unit"] is not None else None
+                ),
+                interval_value=(
+                    int(row["interval_value"]) if row["interval_value"] is not None else None
+                ),
             )
         )
 
@@ -651,41 +681,43 @@ class SqliteProfileStore(ProfileStore):
         ------
         UnknownJobError
             If the target job does not exist.
+
+        Notes
+        -----
+        Only trigger metadata is persisted here. Current Job binding and
+        Template compression remain authoritative elsewhere and are resolved at
+        read/execution time.
         """
         normalized = normalize_schedule_spec(schedule)
         with self._connect() as conn:
             _ensure_schema(conn)
             job = conn.execute(
-                "SELECT job_id, name FROM jobs WHERE job_id = ? AND is_deleted = 0",
+                "SELECT job_id FROM jobs WHERE job_id = ? AND is_deleted = 0",
                 (normalized.job_id,),
             ).fetchone()
             if job is None:
                 raise UnknownJobError(f"Unknown job_id: {normalized.job_id}")
 
             conn.execute(
-                "INSERT INTO job_schedules(job_id, cadence, start_time_local, weekdays) "
-                "VALUES(?, ?, ?, ?) "
+                "INSERT INTO job_schedules("
+                "job_id, cadence, start_time_local, weekdays, interval_unit, interval_value"
+                ") "
+                "VALUES(?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(job_id) DO UPDATE SET "
                 "cadence = excluded.cadence, "
                 "start_time_local = excluded.start_time_local, "
-                "weekdays = excluded.weekdays",
+                "weekdays = excluded.weekdays, "
+                "interval_unit = excluded.interval_unit, "
+                "interval_value = excluded.interval_value",
                 (
                     normalized.job_id,
                     normalized.cadence,
                     normalized.start_time_local,
                     ",".join(normalized.weekdays) if normalized.weekdays else None,
+                    normalized.interval_unit,
+                    normalized.interval_value,
                 ),
             )
-            conn.execute(
-                "UPDATE jobs SET source_root = ? WHERE job_id = ? AND is_deleted = 0",
-                (normalized.source_root, normalized.job_id),
-            )
-
-        self.save_template_compression(
-            job_id=normalized.job_id,
-            name=str(job["name"]),
-            compression=normalized.compression,
-        )
 
     def delete_backup_schedule(self, job_id: JobId) -> None:
         """

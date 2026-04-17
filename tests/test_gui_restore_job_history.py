@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import cast
 
@@ -82,6 +83,41 @@ def test_restore_tab_persists_last_selected_restore_preferences_across_reopen(
         assert str(reopened_tab.mode_combo.currentData()) == "overwrite"
         assert str(reopened_tab.verify_combo.currentData()) == "none"
         assert reopened_tab.dry_run.isChecked() is False
+    finally:
+        reopened_tab.shutdown()
+
+
+def test_restore_tab_persists_last_selected_job_across_reopen(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.settings_store.default_data_root", lambda: tmp_path)
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: None)
+
+    first_tab = RestoreTab()
+    try:
+        first_tab._on_jobs_loaded(  # noqa: SLF001
+            [
+                JobSummary(job_id="job-a", name="Job A"),
+                JobSummary(job_id="job-b", name="Job B"),
+            ]
+        )
+        first_tab.job_combo.setCurrentIndex(2)
+        assert str(first_tab.job_combo.currentData()) == "job-b"
+    finally:
+        first_tab.shutdown()
+
+    reopened_tab = RestoreTab()
+    try:
+        reopened_tab._on_jobs_loaded(  # noqa: SLF001
+            [
+                JobSummary(job_id="job-a", name="Job A"),
+                JobSummary(job_id="job-b", name="Job B"),
+            ]
+        )
+        assert str(reopened_tab.job_combo.currentData()) == "job-b"
     finally:
         reopened_tab.shutdown()
 
@@ -791,6 +827,97 @@ def test_restore_history_details_show_normal_backup_origin(
         tab.shutdown()
 
 
+def test_restore_selected_run_paths_stay_synced_after_reload_filter_and_selection(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+
+    archive_root = tmp_path / "archive"
+    run_a_manifest = archive_root / "run-a" / "manifest.json"
+    run_b_manifest = archive_root / "run-b" / "manifest.json"
+
+    _write_manifest(
+        run_a_manifest,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-a",
+            "created_at_utc": "2026-01-05T00:00:00Z",
+            "archive_root": str(archive_root / "artifacts-a"),
+            "plan_text_path": str(archive_root / "run-a" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source-a",
+            "job_id": "job-a-id",
+            "job_name": "Job A",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+    _write_manifest(
+        run_b_manifest,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-b",
+            "created_at_utc": "2026-01-06T00:00:00Z",
+            "archive_root": str(archive_root / "artifacts-b"),
+            "plan_text_path": str(archive_root / "run-b" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source-b",
+            "job_id": "job-b-id",
+            "job_name": "Job B",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+    os.utime(run_a_manifest, (100, 100))
+    os.utime(run_b_manifest, (200, 200))
+
+    opened_urls: list[QUrl] = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", opened_urls.append)
+
+    def _assert_selected_paths(tab: RestoreTab) -> None:
+        current_item = tab.history.currentItem()
+        assert current_item is not None
+        selected_run = tab._selected_run_from_item(current_item)  # noqa: SLF001
+        assert selected_run is not None
+        assert tab._selected_manifest_path == selected_run.manifest_path  # noqa: SLF001
+        assert tab._selected_run_summary == selected_run  # noqa: SLF001
+        details_text = tab.details.toPlainText()
+        assert f"  path: {selected_run.manifest_path}" in details_text
+        assert f"  artifacts_root: {selected_run.archive_root}" in details_text
+
+        before_count = len(opened_urls)
+        tab._open_manifest_folder()  # noqa: SLF001
+        tab._open_artifacts_root()  # noqa: SLF001
+
+        assert len(opened_urls) == before_count + 2
+        assert Path(opened_urls[-2].toLocalFile()) == selected_run.manifest_path.parent
+        assert Path(opened_urls[-1].toLocalFile()) == Path(str(selected_run.archive_root))
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded(  # noqa: SLF001
+            [
+                JobSummary(job_id="job-a-id", name="Job A"),
+                JobSummary(job_id="job-b-id", name="Job B"),
+            ]
+        )
+        tab.archive_root.setText(str(archive_root))
+
+        tab.refresh_on_activate()
+        _assert_selected_paths(tab)
+
+        tab.job_combo.setCurrentIndex(2)
+        _assert_selected_paths(tab)
+
+        tab.job_combo.setCurrentIndex(0)
+        tab.history.setCurrentRow(1)
+        _assert_selected_paths(tab)
+    finally:
+        tab.shutdown()
+
+
 def test_restore_summary_shows_backup_origin_labels(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -872,7 +999,7 @@ def test_restore_history_filter_matches_backup_note_text(
             "profile_name": "default",
             "source_root": "C:/source",
             "backup_origin": "scheduled",
-            "backup_note": "Scheduled backup executed by scheduler",
+            "backup_note": "Scheduled backup executed by Windows Task Scheduler",
             "operations": [],
             "scan_issues": [],
         },
@@ -900,7 +1027,10 @@ def test_restore_history_filter_matches_backup_note_text(
 
         assert tab.history.count() == 1
         assert "run-scheduled" in tab.history.item(0).text()
-        assert "backup_note: Scheduled backup executed by scheduler" in tab.details.toPlainText()
+        assert (
+            "backup_note: Scheduled backup executed by Windows Task Scheduler"
+            in tab.details.toPlainText()
+        )
     finally:
         tab.shutdown()
 

@@ -96,6 +96,7 @@ def test_run_tab_persists_last_selected_run_mode_across_reopen(
 
     monkeypatch.setattr("gui.settings_store.default_data_root", lambda: tmp_path)
     monkeypatch.setattr("gui.tabs.run_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr(RunTab, "_refresh_job_binding", lambda self, job_id: None)
 
     first_tab = RunTab()
     try:
@@ -109,6 +110,41 @@ def test_run_tab_persists_last_selected_run_mode_across_reopen(
     reopened_tab = RunTab()
     try:
         assert str(reopened_tab.mode_combo.currentData()) == "execute+compress"
+    finally:
+        reopened_tab.shutdown()
+
+
+def test_run_tab_persists_last_selected_job_across_reopen(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.settings_store.default_data_root", lambda: tmp_path)
+    monkeypatch.setattr("gui.tabs.run_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr(RunTab, "_refresh_job_binding", lambda self, job_id: None)
+
+    first_tab = RunTab()
+    try:
+        first_tab._on_jobs_loaded(  # noqa: SLF001
+            [
+                JobSummary(job_id="job-a", name="Job A"),
+                JobSummary(job_id="job-b", name="Job B"),
+            ]
+        )
+        first_tab.job_combo.setCurrentIndex(1)
+        assert str(first_tab.job_combo.currentData()) == "job-b"
+    finally:
+        first_tab.shutdown()
+
+    reopened_tab = RunTab()
+    try:
+        reopened_tab._on_jobs_loaded(  # noqa: SLF001
+            [
+                JobSummary(job_id="job-a", name="Job A"),
+                JobSummary(job_id="job-b", name="Job B"),
+            ]
+        )
+        assert str(reopened_tab.job_combo.currentData()) == "job-b"
     finally:
         reopened_tab.shutdown()
 

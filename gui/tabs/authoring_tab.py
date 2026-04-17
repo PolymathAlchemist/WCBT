@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 
 from gui.adapters.profile_store_adapter import GuiRuleSet, ProfileStoreAdapter
 from gui.dialogs.rule_editor_dialog import RuleEditorDialog
+from gui.settings_store import load_gui_settings
 
 
 def _mono() -> QFont:
@@ -83,6 +84,7 @@ class AuthoringTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._store: ProfileStoreAdapter | None = None
+        self._settings = load_gui_settings(data_root=None)
 
         self._active_job_id: str | None = None
         self._pending_select_job_id: str | None = None
@@ -95,7 +97,10 @@ class AuthoringTab(QWidget):
 
         # Engine-backed store via a Qt adapter (no CLI calls).
         # v1 uses the default profile; we can plumb this from the app later.
-        self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
+        self._store = ProfileStoreAdapter(
+            profile_name="default",
+            data_root=self._settings.data_root,
+        )
         self._store.jobs_loaded.connect(self._on_jobs_loaded)
         self._store.rules_loaded.connect(self._on_rules_loaded)
         self._store.rules_saved.connect(self._on_rules_saved)

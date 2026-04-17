@@ -343,7 +343,7 @@ class RunTab(QWidget):
         self._loading_settings = True
         self._active_job_id: str | None = None
         self._current_job_binding: JobBinding | None = None
-        self._pending_select_job_id: str | None = None
+        self._pending_select_job_id: str | None = self._settings.last_selected_run_job_id
         self._store = ProfileStoreAdapter(
             profile_name="default",
             data_root=self._settings.data_root,
@@ -491,6 +491,35 @@ class RunTab(QWidget):
             restore_verify=self._settings.restore_verify,
             restore_dry_run=self._settings.restore_dry_run,
             pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            last_selected_run_job_id=self._settings.last_selected_run_job_id,
+            last_selected_restore_job_selection=self._settings.last_selected_restore_job_selection,
+        )
+        save_gui_settings(data_root=None, settings=updated_settings)
+        self._settings = updated_settings
+
+    def _persist_last_selected_job_id(self, job_id: str | None) -> None:
+        """
+        Persist the last selected Run tab job identifier.
+
+        Parameters
+        ----------
+        job_id:
+            Selected job identifier, or ``None`` when no job is selected.
+        """
+        if self._settings.last_selected_run_job_id == job_id:
+            return
+
+        updated_settings = GuiSettings(
+            data_root=self._settings.data_root,
+            archives_root=self._settings.archives_root,
+            default_compression=self._settings.default_compression,
+            default_run_mode=self._settings.default_run_mode,
+            restore_mode=self._settings.restore_mode,
+            restore_verify=self._settings.restore_verify,
+            restore_dry_run=self._settings.restore_dry_run,
+            pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            last_selected_run_job_id=job_id,
+            last_selected_restore_job_selection=self._settings.last_selected_restore_job_selection,
         )
         save_gui_settings(data_root=None, settings=updated_settings)
         self._settings = updated_settings
@@ -693,6 +722,7 @@ class RunTab(QWidget):
 
     def _on_job_changed(self) -> None:
         self._active_job_id = self._selected_job_id()
+        self._persist_last_selected_job_id(self._active_job_id)
         self._refresh_job_binding(self._active_job_id)
 
     def _job_name_exists(self, name: str, *, excluding_job_id: str | None = None) -> bool:

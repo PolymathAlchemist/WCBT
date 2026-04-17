@@ -57,6 +57,7 @@ from gui.adapters.profile_store_adapter import ProfileStoreAdapter
 from gui.settings_store import GuiSettings, load_gui_settings, save_gui_settings
 
 _ALL_HISTORY_LABEL = "All history"
+_ALL_HISTORY_SETTINGS_SELECTION = "__all_history__"
 
 
 def _format_mtime(ts: float) -> str:
@@ -227,6 +228,9 @@ class RestoreTab(QWidget):
         self._settings = load_gui_settings(data_root=None)
         self._loading_settings = True
         self._known_job_ids: list[str] = []
+        self._pending_restore_job_selection: str | None = (
+            self._settings.last_selected_restore_job_selection
+        )
         self._store = ProfileStoreAdapter(
             profile_name="default",
             data_root=self._settings.data_root,
@@ -237,6 +241,7 @@ class RestoreTab(QWidget):
         self._store.restore_defaults_saved.connect(self._on_restore_defaults_saved)
 
         self._selected_manifest_path: Path | None = None
+        self._selected_run_summary: BackupRunSummary | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
@@ -442,6 +447,7 @@ class RestoreTab(QWidget):
 
     def _on_job_changed(self) -> None:
         job_id = self._selected_job_id()
+        self._persist_last_selected_job_selection(job_id)
         authoritative_display_text = self._resolve_archive_root_display_text(None)
         if authoritative_display_text:
             self.archive_root.blockSignals(True)
@@ -471,7 +477,7 @@ class RestoreTab(QWidget):
                 name = str(getattr(js, "name"))
                 self._known_job_ids.append(job_id)
                 self.job_combo.addItem(name, job_id)
-            self.job_combo.setCurrentIndex(1 if len(jobs) > 0 else 0)
+            self._apply_persisted_job_selection(len(jobs))
         finally:
             self.job_combo.blockSignals(False)
 
@@ -574,6 +580,57 @@ class RestoreTab(QWidget):
             restore_verify=str(self.verify_combo.currentData()),
             restore_dry_run=self.dry_run.isChecked(),
             pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            last_selected_run_job_id=self._settings.last_selected_run_job_id,
+            last_selected_restore_job_selection=self._settings.last_selected_restore_job_selection,
+        )
+        save_gui_settings(data_root=None, settings=updated_settings)
+        self._settings = updated_settings
+
+    def _apply_persisted_job_selection(self, job_count: int) -> None:
+        """
+        Restore the persisted Restore-tab job selection after repopulating the combo.
+
+        Parameters
+        ----------
+        job_count:
+            Number of active jobs currently loaded into the combo box.
+        """
+        selection = self._pending_restore_job_selection
+        self._pending_restore_job_selection = None
+        if selection == _ALL_HISTORY_SETTINGS_SELECTION:
+            self.job_combo.setCurrentIndex(0)
+            return
+        if selection is not None:
+            for index in range(1, self.job_combo.count()):
+                if str(self.job_combo.itemData(index)) == selection:
+                    self.job_combo.setCurrentIndex(index)
+                    return
+        self.job_combo.setCurrentIndex(1 if job_count > 0 else 0)
+
+    def _persist_last_selected_job_selection(self, job_id: str | None) -> None:
+        """
+        Persist the last selected Restore-tab job filter.
+
+        Parameters
+        ----------
+        job_id:
+            Selected job identifier, or ``None`` for the All history filter.
+        """
+        selection = _ALL_HISTORY_SETTINGS_SELECTION if job_id is None else job_id
+        if self._settings.last_selected_restore_job_selection == selection:
+            return
+
+        updated_settings = GuiSettings(
+            data_root=self._settings.data_root,
+            archives_root=self._settings.archives_root,
+            default_compression=self._settings.default_compression,
+            default_run_mode=self._settings.default_run_mode,
+            restore_mode=self._settings.restore_mode,
+            restore_verify=self._settings.restore_verify,
+            restore_dry_run=self._settings.restore_dry_run,
+            pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            last_selected_run_job_id=self._settings.last_selected_run_job_id,
+            last_selected_restore_job_selection=selection,
         )
         save_gui_settings(data_root=None, settings=updated_settings)
         self._settings = updated_settings
@@ -811,6 +868,7 @@ class RestoreTab(QWidget):
 
         self.history.clear()
         self._selected_manifest_path = None
+        self._selected_run_summary = None
 
         if hasattr(self, "btn_restore"):
             self.btn_restore.setEnabled(False)
@@ -865,6 +923,7 @@ class RestoreTab(QWidget):
 
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, str(r.manifest_path))
+            item.setData(Qt.UserRole + 1, r)
             self.history.addItem(item)
 
         if self.history.count() > 0:
@@ -879,17 +938,20 @@ class RestoreTab(QWidget):
         self._refresh_history()
 
     def _build_restore_summary(self) -> str:
+        selected_run = self._selected_run_summary
         manifest_path = self._selected_manifest_path
         dest_text = self.dest.text().strip()
 
         lines: list[str] = []
         lines.append("WCBT RESTORE SUMMARY")
 
-        if manifest_path is None:
+        if manifest_path is None or selected_run is None:
             lines.append("selected_manifest: (none)")
             return "\n".join(lines)
 
         lines.append(f"selected_manifest: {manifest_path}")
+        if selected_run.archive_root:
+            lines.append(f"selected_artifacts_root: {selected_run.archive_root}")
         lines.append(f"destination: {dest_text or '(empty)'}")
         lines.append(f"mode: {str(self.mode_combo.currentData())}")
         lines.append(f"verify: {str(self.verify_combo.currentData())}")
@@ -963,8 +1025,9 @@ class RestoreTab(QWidget):
         )
 
     def _restore_selected(self) -> None:
-        cur = self.history.currentItem()
-        if cur is None:
+        selected_run = self._selected_run_summary
+        manifest_path = self._selected_manifest_path
+        if selected_run is None or manifest_path is None:
             QMessageBox.warning(self, "Restore", "Select a manifest to restore.")
             return
 
@@ -973,7 +1036,6 @@ class RestoreTab(QWidget):
             QMessageBox.warning(self, "Restore", "Choose a destination folder.")
             return
 
-        manifest_path = Path(str(cur.data(Qt.UserRole)))
         if not manifest_path.exists():
             QMessageBox.critical(self, "Restore", "Selected manifest does not exist.")
             return
@@ -996,12 +1058,44 @@ class RestoreTab(QWidget):
         )
         QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
 
+    @staticmethod
+    def _selected_run_from_item(item: QListWidgetItem | None) -> BackupRunSummary | None:
+        """
+        Return the authoritative discovered run summary attached to a history item.
+
+        Parameters
+        ----------
+        item:
+            History list item for one discovered run.
+
+        Returns
+        -------
+        BackupRunSummary | None
+            Attached discovered run summary when available.
+        """
+        if item is None:
+            return None
+        payload = item.data(Qt.UserRole + 1)
+        return payload if isinstance(payload, BackupRunSummary) else None
+
     def _on_selected(self, current: QListWidgetItem | None, _prev: QListWidgetItem | None) -> None:
         if current is None:
+            self._selected_manifest_path = None
+            self._selected_run_summary = None
             return
 
-        manifest_path = Path(str(current.data(Qt.UserRole)))
+        selected_run = self._selected_run_from_item(current)
+        if selected_run is None:
+            self._selected_manifest_path = None
+            self._selected_run_summary = None
+            self.details.setPlainText("Selected run metadata is unavailable.")
+            self.restore_resolution.setPlainText("")
+            self.btn_restore.setEnabled(False)
+            return
+
+        manifest_path = selected_run.manifest_path
         self._selected_manifest_path = manifest_path
+        self._selected_run_summary = selected_run
 
         try:
             st = manifest_path.stat()
@@ -1017,6 +1111,8 @@ class RestoreTab(QWidget):
         lines.append("MANIFEST")
         lines.append(f"  path: {manifest_path}")
         lines.append(f"  folder: {manifest_path.parent}")
+        if selected_run.archive_root:
+            lines.append(f"  artifacts_root: {selected_run.archive_root}")
         lines.append(f"  modified: {_format_mtime(mtime)}")
         backup_origin_label = None
         backup_origin_value = summary.get("backup_origin") if summary else None
@@ -1053,14 +1149,18 @@ class RestoreTab(QWidget):
             self.dest.setText(d)
 
     def _open_manifest_folder(self) -> None:
-        if self._selected_manifest_path is None:
+        if self._selected_run_summary is None:
             QMessageBox.information(self, "Artifacts", "Select a manifest first.")
             return
-        folder = self._selected_manifest_path.parent
+        folder = self._selected_run_summary.manifest_path.parent
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _open_artifacts_root(self) -> None:
-        root = self._resolve_authoritative_artifacts_root()
+        selected_run = self._selected_run_summary
+        if selected_run is not None and selected_run.archive_root:
+            root = Path(selected_run.archive_root)
+        else:
+            root = self._resolve_authoritative_artifacts_root()
         if root is None:
             QMessageBox.information(
                 self,

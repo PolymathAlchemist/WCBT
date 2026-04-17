@@ -38,12 +38,19 @@ class ScheduledTaskTriggerSpec:
     weekdays:
         Weekly day set using Task Scheduler day tokens such as ``MON``.
         Empty for daily schedules.
+    interval_unit:
+        Interval unit for ``interval`` schedules. Supported values are
+        ``"minutes"`` and ``"hours"``.
+    interval_value:
+        Repeat interval magnitude for ``interval`` schedules.
     """
 
     job_id: str
     cadence: str
     start_time_local: str
     weekdays: tuple[str, ...]
+    interval_unit: str | None = None
+    interval_value: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +104,8 @@ class BackupScheduleSpec:
         start_time_local: str,
         weekdays: tuple[str, ...],
         compression: str,
+        interval_unit: str | None = None,
+        interval_value: int | None = None,
     ) -> None:
         object.__setattr__(
             self,
@@ -106,6 +115,8 @@ class BackupScheduleSpec:
                 cadence=cadence,
                 start_time_local=start_time_local,
                 weekdays=weekdays,
+                interval_unit=interval_unit,
+                interval_value=interval_value,
             ),
         )
         object.__setattr__(
@@ -179,6 +190,16 @@ class BackupScheduleSpec:
         return self.legacy_definition.source_root
 
     @property
+    def interval_unit(self) -> str | None:
+        """Return the interval unit from trigger metadata."""
+        return self.trigger.interval_unit
+
+    @property
+    def interval_value(self) -> int | None:
+        """Return the interval magnitude from trigger metadata."""
+        return self.trigger.interval_value
+
+    @property
     def compression(self) -> str:
         """
         Return transitional scheduled execution compression input.
@@ -235,8 +256,15 @@ class ScheduledBackupStatus:
         trigger for user-facing convenience.
     task_name:
         Derived Windows task name for the job.
+    wrapper_path:
+        Generated per-job wrapper path registered with Task Scheduler.
+    wrapper_exists:
+        Whether the generated wrapper file currently exists on disk.
     task_exists:
         Whether the backing Windows task currently exists.
+    task_enabled:
+        Whether the backing task currently appears enabled. ``None`` means WCBT
+        could not determine the state from available scheduler details.
     scheduler_details:
         Verbose ``schtasks`` fields when they are available.
     """
@@ -245,7 +273,10 @@ class ScheduledBackupStatus:
     current_job_binding: JobBinding
     current_template_compression: str | None
     task_name: str
+    wrapper_path: str
+    wrapper_exists: bool
     task_exists: bool
+    task_enabled: bool | None
     scheduler_details: Mapping[str, str]
 
 
@@ -287,8 +318,8 @@ def normalize_schedule_spec(spec: BackupScheduleSpec) -> BackupScheduleSpec:
         raise InvalidScheduleError("source_root must not be empty.")
 
     cadence = trigger.cadence.strip().lower()
-    if cadence not in {"daily", "weekly"}:
-        raise InvalidScheduleError("cadence must be 'daily' or 'weekly'.")
+    if cadence not in {"daily", "weekly", "interval"}:
+        raise InvalidScheduleError("cadence must be 'daily', 'weekly', or 'interval'.")
 
     start_time_local = normalize_start_time_local(trigger.start_time_local)
 
@@ -301,6 +332,21 @@ def normalize_schedule_spec(spec: BackupScheduleSpec) -> BackupScheduleSpec:
         raise InvalidScheduleError("daily schedules must not specify weekdays.")
     if cadence == "weekly" and not weekdays:
         raise InvalidScheduleError("weekly schedules must specify at least one weekday.")
+    if cadence == "interval" and weekdays:
+        raise InvalidScheduleError("interval schedules must not specify weekdays.")
+
+    interval_unit = normalize_interval_unit(trigger.interval_unit)
+    interval_value = normalize_interval_value(trigger.interval_value)
+    if cadence == "interval":
+        if interval_unit is None or interval_value is None:
+            raise InvalidScheduleError(
+                "interval schedules must specify interval_unit and interval_value."
+            )
+    else:
+        if interval_unit is not None or interval_value is not None:
+            raise InvalidScheduleError(
+                "daily/weekly schedules must not specify interval_unit or interval_value."
+            )
 
     return BackupScheduleSpec.from_parts(
         trigger=ScheduledTaskTriggerSpec(
@@ -308,6 +354,8 @@ def normalize_schedule_spec(spec: BackupScheduleSpec) -> BackupScheduleSpec:
             cadence=cadence,
             start_time_local=start_time_local,
             weekdays=weekdays,
+            interval_unit=interval_unit,
+            interval_value=interval_value,
         ),
         legacy_definition=ScheduledBackupLegacyDefinition(
             source_root=source_root,
@@ -371,3 +419,58 @@ def normalize_weekdays(values: Sequence[str] | Iterable[str]) -> tuple[str, ...]
             raise InvalidScheduleError(f"Unsupported weekday token: {raw!r}")
         normalized.add(day)
     return tuple(sorted(normalized, key=_WEEKDAY_INDEX.__getitem__))
+
+
+def normalize_interval_unit(value: str | None) -> str | None:
+    """
+    Normalize an interval cadence unit.
+
+    Parameters
+    ----------
+    value:
+        Candidate interval unit.
+
+    Returns
+    -------
+    str | None
+        Normalized interval unit, or ``None`` when no unit is supplied.
+
+    Raises
+    ------
+    InvalidScheduleError
+        If the unit is outside the supported interval cadence surface.
+    """
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in {"minutes", "hours"}:
+        raise InvalidScheduleError("interval_unit must be 'minutes' or 'hours'.")
+    return normalized
+
+
+def normalize_interval_value(value: int | None) -> int | None:
+    """
+    Normalize an interval cadence magnitude.
+
+    Parameters
+    ----------
+    value:
+        Candidate interval magnitude.
+
+    Returns
+    -------
+    int | None
+        Normalized interval magnitude, or ``None`` when not supplied.
+
+    Raises
+    ------
+    InvalidScheduleError
+        If the magnitude is outside the supported interval cadence surface.
+    """
+    if value is None:
+        return None
+    if value <= 0:
+        raise InvalidScheduleError("interval_value must be greater than 0.")
+    return value

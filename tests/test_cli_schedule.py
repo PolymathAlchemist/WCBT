@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 import wcbt.cli as cli_module
@@ -19,8 +17,6 @@ def test_cli_schedule_create_rejects_day_with_daily(capsys: pytest.CaptureFixtur
             "p",
             "--job-id",
             "job1",
-            "--source",
-            str(Path("C:/tmp/source")),
             "--daily",
             "--day",
             "MON",
@@ -45,8 +41,6 @@ def test_cli_schedule_create_rejects_weekly_without_day(
             "p",
             "--job-id",
             "job1",
-            "--source",
-            str(Path("C:/tmp/source")),
             "--weekly",
             "--start-time",
             "06:30",
@@ -56,6 +50,28 @@ def test_cli_schedule_create_rejects_weekly_without_day(
     out = capsys.readouterr().out
     assert rc == 2
     assert "--weekly requires at least one --day" in out
+
+
+def test_cli_schedule_create_rejects_interval_without_unit_and_value(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = cli_module.main(
+        [
+            "schedule",
+            "create",
+            "--profile",
+            "p",
+            "--job-id",
+            "job1",
+            "--interval",
+            "--start-time",
+            "06:30",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "--interval requires --interval-unit and positive --interval-value" in out
 
 
 def test_cli_schedule_create_prints_summary(
@@ -74,7 +90,10 @@ def test_cli_schedule_create_prints_summary(
             ),
             current_template_compression="none",
             task_name="WCBT-default-job1",
+            wrapper_path="C:/Users/test/AppData/Local/wcbt/profiles/default/scheduled_wrappers/job1.bat",
+            wrapper_exists=True,
             task_exists=True,
+            task_enabled=True,
             scheduler_details={},
         )
 
@@ -90,8 +109,6 @@ def test_cli_schedule_create_prints_summary(
             "p",
             "--job-id",
             "job1",
-            "--source",
-            str(Path("C:/tmp/source")),
             "--daily",
             "--start-time",
             "06:30",
@@ -101,7 +118,63 @@ def test_cli_schedule_create_prints_summary(
     out = capsys.readouterr().out
     assert rc == 0
     assert "Scheduled task : WCBT-default-job1" in out
+    assert "Wrapper        :" in out
     assert "Task exists    : yes" in out
+    assert "Task enabled   : yes" in out
+
+
+def test_cli_schedule_create_interval_prints_summary(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _create_or_update_scheduled_backup(**kwargs: object) -> ScheduledBackupStatus:
+        schedule = kwargs["schedule"]
+        assert isinstance(schedule, BackupScheduleSpec)
+        assert schedule.cadence == "interval"
+        assert schedule.interval_unit == "minutes"
+        assert schedule.interval_value == 10
+        return ScheduledBackupStatus(
+            schedule=schedule,
+            current_job_binding=JobBinding(
+                job_id="job1",
+                job_name="My Job",
+                template_id="job1",
+                source_root="C:/tmp/source",
+            ),
+            current_template_compression="none",
+            task_name="WCBT-default-job1",
+            wrapper_path="C:/Users/test/AppData/Local/wcbt/profiles/default/scheduled_wrappers/job1.bat",
+            wrapper_exists=True,
+            task_exists=True,
+            task_enabled=True,
+            scheduler_details={},
+        )
+
+    monkeypatch.setattr(
+        cli_module, "create_or_update_scheduled_backup", _create_or_update_scheduled_backup
+    )
+
+    rc = cli_module.main(
+        [
+            "schedule",
+            "create",
+            "--profile",
+            "p",
+            "--job-id",
+            "job1",
+            "--interval",
+            "--interval-unit",
+            "minutes",
+            "--interval-value",
+            "10",
+            "--start-time",
+            "06:30",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Cadence        : interval" in out
+    assert "Interval       : 10 minutes" in out
 
 
 def test_cli_schedule_query_returns_2_on_error(
@@ -119,37 +192,33 @@ def test_cli_schedule_query_returns_2_on_error(
     assert "ERROR: bad schedule" in out
 
 
-def test_cli_scheduled_backup_uses_saved_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_run_job_uses_stable_scheduled_entrypoint(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, object] = {}
 
-    def _load_scheduled_backup_run_request(
-        **kwargs: object,
-    ) -> tuple[JobBinding, str]:
-        del kwargs
-        return (
-            JobBinding(
-                job_id="job1",
-                job_name="My Job",
-                template_id="template-1",
-                source_root="C:/tmp/source",
-            ),
-            "zip",
-        )
-
-    def _run_backup(**kwargs: object) -> None:
+    def _run_scheduled_job(**kwargs: object) -> None:
         seen.update(kwargs)
 
-    monkeypatch.setattr(
-        cli_module, "load_scheduled_backup_run_request", _load_scheduled_backup_run_request
+    monkeypatch.setattr(cli_module, "run_scheduled_job", _run_scheduled_job)
+
+    rc = cli_module.main(
+        ["run-job", "--profile", "p", "--job-id", "job1", "--mode", "execute-compress"]
     )
-    monkeypatch.setattr(cli_module, "run_backup", _run_backup)
+
+    assert rc == 0
+    assert seen["profile_name"] == "p"
+    assert seen["job_id"] == "job1"
+    assert seen["mode"] == "execute-compress"
+
+
+def test_cli_scheduled_backup_alias_uses_execute_compress(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def _run_scheduled_job(**kwargs: object) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "run_scheduled_job", _run_scheduled_job)
 
     rc = cli_module.main(["scheduled-backup", "--profile", "p", "--job-id", "job1"])
 
     assert rc == 0
-    assert seen["execute"] is True
-    assert seen["compress"] is True
-    assert seen["compression"] == "zip"
-    assert seen["backup_origin"] == "scheduled"
-    assert seen["backup_note"] == "Scheduled backup executed by scheduler"
-    assert seen["job_name"] == "My Job"
+    assert seen["mode"] == "execute-compress"

@@ -26,6 +26,8 @@ class GuiSettings:
     restore_verify: str = "size"  # "none" | "size"
     restore_dry_run: bool = True
     pre_restore_backup_compression: str = "zip"  # "tar.zst" | "zip" | "none"
+    last_selected_run_job_id: str | None = None
+    last_selected_restore_job_selection: str | None = None
 
     @staticmethod
     def defaults() -> "GuiSettings":
@@ -38,6 +40,8 @@ class GuiSettings:
             restore_verify="size",
             restore_dry_run=True,
             pre_restore_backup_compression="zip",
+            last_selected_run_job_id=None,
+            last_selected_restore_job_selection=None,
         )
 
 
@@ -101,6 +105,17 @@ def load_gui_settings(*, data_root: Path | None) -> GuiSettings:
         if pre_restore_backup_compression not in {"tar.zst", "zip", "none"}:
             pre_restore_backup_compression = "zip"
 
+        last_selected_run_job_id = payload.get("last_selected_run_job_id")
+        if not isinstance(last_selected_run_job_id, str) or not last_selected_run_job_id.strip():
+            last_selected_run_job_id = None
+
+        last_selected_restore_job_selection = payload.get("last_selected_restore_job_selection")
+        if (
+            not isinstance(last_selected_restore_job_selection, str)
+            or not last_selected_restore_job_selection.strip()
+        ):
+            last_selected_restore_job_selection = None
+
         return GuiSettings(
             data_root=data_root_val,
             archives_root=archives_root_val,
@@ -110,6 +125,8 @@ def load_gui_settings(*, data_root: Path | None) -> GuiSettings:
             restore_verify=str(restore_verify),
             restore_dry_run=restore_dry_run,
             pre_restore_backup_compression=str(pre_restore_backup_compression),
+            last_selected_run_job_id=last_selected_run_job_id,
+            last_selected_restore_job_selection=last_selected_restore_job_selection,
         )
     except FileNotFoundError:
         return GuiSettings.defaults()
@@ -142,5 +159,7 @@ def save_gui_settings(*, data_root: Path | None, settings: GuiSettings) -> None:
         "restore_verify": settings.restore_verify,
         "restore_dry_run": settings.restore_dry_run,
         "pre_restore_backup_compression": settings.pre_restore_backup_compression,
+        "last_selected_run_job_id": settings.last_selected_run_job_id,
+        "last_selected_restore_job_selection": settings.last_selected_restore_job_selection,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")

@@ -41,6 +41,8 @@ class SchtasksBackend:
         cadence: str,
         start_time_local: str,
         weekdays: Sequence[str],
+        interval_unit: str | None = None,
+        interval_value: int | None = None,
     ) -> None:
         """
         Create or replace a Windows scheduled task.
@@ -57,7 +59,26 @@ class SchtasksBackend:
             Local start time in ``HH:MM`` format.
         weekdays:
             Weekly day tokens for ``weekly`` schedules.
+        interval_unit:
+            Interval unit for ``interval`` schedules.
+        interval_value:
+            Interval magnitude for ``interval`` schedules.
         """
+        schedule_cadence = cadence.upper()
+        modifier_args: list[str] = []
+        if cadence == "interval":
+            if interval_unit == "minutes":
+                schedule_cadence = "MINUTE"
+            elif interval_unit == "hours":
+                schedule_cadence = "HOURLY"
+            else:
+                raise SchedulingBackendError(
+                    f"Unsupported interval unit for schtasks: {interval_unit!r}"
+                )
+            if interval_value is None:
+                raise SchedulingBackendError("interval_value is required for interval schedules.")
+            modifier_args = ["/mo", str(interval_value)]
+
         args = [
             "/create",
             "/f",
@@ -66,7 +87,8 @@ class SchtasksBackend:
             "/tr",
             task_command,
             "/sc",
-            cadence.upper(),
+            schedule_cadence,
+            *modifier_args,
             "/st",
             start_time_local,
             "/it",
@@ -138,6 +160,19 @@ class SchtasksBackend:
         """
         self._run(["/run", "/tn", task_name])
 
+    def set_task_enabled(self, *, task_name: str, enabled: bool) -> None:
+        """
+        Enable or disable a Windows scheduled task.
+
+        Parameters
+        ----------
+        task_name:
+            Windows task name.
+        enabled:
+            Desired enabled state.
+        """
+        self._run(["/change", "/tn", task_name, "/enable" if enabled else "/disable"])
+
     def _run(self, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
         """
         Execute ``schtasks.exe`` and translate failures into WCBT errors.
@@ -159,8 +194,9 @@ class SchtasksBackend:
         SchedulingBackendError
             If the command fails for any other reason.
         """
+        command = ["schtasks", *args]
         completed = self.runner(
-            ["schtasks", *args],
+            command,
             capture_output=True,
             text=True,
             check=False,
@@ -172,7 +208,12 @@ class SchtasksBackend:
         if _looks_like_missing_task(text):
             raise ScheduledTaskNotFoundError(text or "Scheduled task not found.")
         raise SchedulingBackendError(
-            text or f"schtasks failed with exit code {completed.returncode}."
+            (
+                f"schtasks command failed: {subprocess.list2cmdline(command)}\n"
+                f"return code: {completed.returncode}\n"
+                f"stdout: {completed.stdout.strip()}\n"
+                f"stderr: {completed.stderr.strip()}"
+            ).strip()
         )
 
 

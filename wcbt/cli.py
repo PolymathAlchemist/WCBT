@@ -29,9 +29,10 @@ from backup_engine.scheduling.models import BackupScheduleSpec
 from backup_engine.scheduling.service import (
     create_or_update_scheduled_backup,
     delete_scheduled_backup,
-    load_scheduled_backup_run_request,
     query_scheduled_backup,
     run_scheduled_backup_now,
+    run_scheduled_job,
+    set_scheduled_backup_enabled,
 )
 
 
@@ -229,28 +230,14 @@ def _build_parser() -> argparse.ArgumentParser:
     create_schedule_p.add_argument("--profile", required=True, help="Profile name.")
     create_schedule_p.add_argument("--job-id", required=True, help="Stable job identifier.")
     create_schedule_p.add_argument(
-        "--source",
-        required=True,
-        type=Path,
-        help="Legacy scheduled-run compatibility input for the current execution path.",
-    )
-    create_schedule_p.add_argument(
         "--data-root",
         default=None,
         help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
     )
-    create_schedule_p.add_argument(
-        "--compression",
-        choices=["tar.zst", "zip", "none"],
-        default="none",
-        help=(
-            "Legacy scheduled-run compatibility input for the current execution path "
-            "(default: none)."
-        ),
-    )
     cadence = create_schedule_p.add_mutually_exclusive_group(required=True)
     cadence.add_argument("--daily", action="store_true", help="Run once per day.")
     cadence.add_argument("--weekly", action="store_true", help="Run on selected weekdays.")
+    cadence.add_argument("--interval", action="store_true", help="Run on a repeating interval.")
     create_schedule_p.add_argument(
         "--start-time",
         required=True,
@@ -262,6 +249,18 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"],
         default=[],
         help="Weekday token for weekly schedules. Repeatable.",
+    )
+    create_schedule_p.add_argument(
+        "--interval-unit",
+        choices=["minutes", "hours"],
+        default=None,
+        help="Interval unit for --interval schedules.",
+    )
+    create_schedule_p.add_argument(
+        "--interval-value",
+        type=int,
+        default=None,
+        help="Interval magnitude for --interval schedules.",
     )
 
     query_schedule_p = schedule_sub.add_parser(
@@ -297,9 +296,49 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
     )
 
+    enable_schedule_p = schedule_sub.add_parser(
+        "enable", help="Enable an existing scheduled backup task."
+    )
+    enable_schedule_p.add_argument("--profile", required=True, help="Profile name.")
+    enable_schedule_p.add_argument("--job-id", required=True, help="Stable job identifier.")
+    enable_schedule_p.add_argument(
+        "--data-root",
+        default=None,
+        help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
+    )
+
+    disable_schedule_p = schedule_sub.add_parser(
+        "disable", help="Disable an existing scheduled backup task."
+    )
+    disable_schedule_p.add_argument("--profile", required=True, help="Profile name.")
+    disable_schedule_p.add_argument("--job-id", required=True, help="Stable job identifier.")
+    disable_schedule_p.add_argument(
+        "--data-root",
+        default=None,
+        help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
+    )
+
+    run_job_p = sub.add_parser(
+        "run-job",
+        help="Run a saved WCBT job through a stable CLI entrypoint.",
+    )
+    run_job_p.add_argument("--profile", required=True, help="Profile name.")
+    run_job_p.add_argument("--job-id", required=True, help="Stable job identifier.")
+    run_job_p.add_argument(
+        "--mode",
+        choices=["execute-compress"],
+        default="execute-compress",
+        help="Scheduled run mode to execute (default: execute-compress).",
+    )
+    run_job_p.add_argument(
+        "--data-root",
+        default=None,
+        help="Override WCBT data root (primarily for testing). If omitted, defaults are used.",
+    )
+
     scheduled_backup_p = sub.add_parser(
         "scheduled-backup",
-        help="Internal entrypoint used by Windows Task Scheduler to run a saved backup job.",
+        help="Deprecated alias for the stable run-job scheduled execution entrypoint.",
     )
     scheduled_backup_p.add_argument("--profile", required=True, help="Profile name.")
     scheduled_backup_p.add_argument("--job-id", required=True, help="Stable job identifier.")
@@ -422,14 +461,36 @@ def main(argv: list[str] | None = None) -> int:
             if args.weekly and not args.day:
                 print("ERROR: --weekly requires at least one --day.")
                 return 2
-            cadence = "weekly" if args.weekly else "daily"
+            if args.interval and args.day:
+                print("ERROR: --day is only valid with --weekly.")
+                return 2
+            if args.interval and (
+                args.interval_unit is None
+                or args.interval_value is None
+                or int(args.interval_value) <= 0
+            ):
+                print("ERROR: --interval requires --interval-unit and positive --interval-value.")
+                return 2
+            if not args.interval and (
+                args.interval_unit is not None or args.interval_value is not None
+            ):
+                print("ERROR: --interval-unit/--interval-value are only valid with --interval.")
+                return 2
+            if args.weekly:
+                cadence = "weekly"
+            elif args.interval:
+                cadence = "interval"
+            else:
+                cadence = "daily"
             spec = BackupScheduleSpec(
                 job_id=args.job_id,
-                source_root=str(args.source),
+                source_root="scheduler-owned-trigger-only",
                 cadence=cadence,
                 start_time_local=str(args.start_time),
                 weekdays=tuple(args.day),
-                compression=str(args.compression),
+                compression="none",
+                interval_unit=args.interval_unit,
+                interval_value=args.interval_value,
             )
             try:
                 status = create_or_update_scheduled_backup(
@@ -444,14 +505,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Job id         : {status.schedule.job_id}")
             print(f"Cadence        : {status.schedule.cadence}")
             print(f"Start time     : {status.schedule.start_time_local}")
+            if status.schedule.cadence == "interval":
+                print(
+                    f"Interval       : {status.schedule.interval_value} "
+                    f"{status.schedule.interval_unit}"
+                )
             print(
                 f"Weekdays       : "
                 f"{','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
             )
+            print(f"Wrapper        : {status.wrapper_path}")
             print(f"Current source : {status.current_job_binding.source_root}")
             if status.current_template_compression is not None:
                 print(f"Current comp.  : {status.current_template_compression}")
             print(f"Task exists    : {'yes' if status.task_exists else 'no'}")
+            if status.task_enabled is not None:
+                print(f"Task enabled   : {'yes' if status.task_enabled else 'no'}")
             return 0
 
         if args.schedule_command == "query":
@@ -468,14 +537,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Job id         : {status.schedule.job_id}")
             print(f"Cadence        : {status.schedule.cadence}")
             print(f"Start time     : {status.schedule.start_time_local}")
+            if status.schedule.cadence == "interval":
+                print(
+                    f"Interval       : {status.schedule.interval_value} "
+                    f"{status.schedule.interval_unit}"
+                )
             print(
                 f"Weekdays       : "
                 f"{','.join(status.schedule.weekdays) if status.schedule.weekdays else '-'}"
             )
+            print(f"Wrapper        : {status.wrapper_path}")
             print(f"Current source : {status.current_job_binding.source_root}")
             if status.current_template_compression is not None:
                 print(f"Current comp.  : {status.current_template_compression}")
             print(f"Task exists    : {'yes' if status.task_exists else 'no'}")
+            if status.task_enabled is not None:
+                print(f"Task enabled   : {'yes' if status.task_enabled else 'no'}")
             return 0
 
         if args.schedule_command == "delete":
@@ -504,28 +581,45 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Scheduled backup started for job_id: {args.job_id}")
             return 0
 
+        if args.schedule_command in {"enable", "disable"}:
+            try:
+                status = set_scheduled_backup_enabled(
+                    profile_name=args.profile,
+                    data_root=data_root,
+                    job_id=args.job_id,
+                    enabled=args.schedule_command == "enable",
+                )
+            except (SafetyViolationError, WcbtError, ValueError) as exc:
+                print(f"ERROR: {exc}")
+                return 2
+            print(f"Scheduled task : {status.task_name}")
+            print(f"Task enabled   : {'yes' if status.task_enabled else 'no'}")
+            return 0
+
         raise AssertionError(f"Unhandled schedule command: {args.schedule_command!r}")
+
+    if args.command == "run-job":
+        data_root = Path(args.data_root) if args.data_root else None
+        try:
+            run_scheduled_job(
+                profile_name=args.profile,
+                job_id=args.job_id,
+                data_root=data_root,
+                mode=str(args.mode),
+            )
+        except (SafetyViolationError, WcbtError, ValueError) as exc:
+            print(f"ERROR: {exc}")
+            return 2
+        return 0
 
     if args.command == "scheduled-backup":
         data_root = Path(args.data_root) if args.data_root else None
         try:
-            job_binding, compression = load_scheduled_backup_run_request(
+            run_scheduled_job(
                 profile_name=args.profile,
-                data_root=data_root,
                 job_id=args.job_id,
-            )
-            run_backup(
-                profile_name=args.profile,
-                source=Path(job_binding.source_root),
-                dry_run=False,
                 data_root=data_root,
-                backup_origin="scheduled",
-                backup_note="Scheduled backup executed by scheduler",
-                execute=True,
-                compress=compression != "none",
-                compression=compression,
-                job_id=args.job_id,
-                job_name=job_binding.job_name,
+                mode="execute-compress",
             )
         except (SafetyViolationError, WcbtError, ValueError) as exc:
             print(f"ERROR: {exc}")

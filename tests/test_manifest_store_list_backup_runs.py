@@ -124,11 +124,11 @@ def test_list_backup_runs_preserves_backup_note_when_present(tmp_path: Path) -> 
             "archive_root": str(archive_root),
             "profile_name": "default",
             "source_root": "C:/source",
-            "backup_note": "Scheduled backup executed by scheduler",
+            "backup_note": "Scheduled backup executed by Windows Task Scheduler",
         },
     )
 
     runs = list_backup_runs(archive_root, limit=10)
 
     assert len(runs) == 1
-    assert runs[0].backup_note == "Scheduled backup executed by scheduler"
+    assert runs[0].backup_note == "Scheduled backup executed by Windows Task Scheduler"

@@ -5,23 +5,39 @@ from pathlib import Path
 
 import pytest
 
+from backup_engine.job_binding import JobBinding
 from backup_engine.profile_store.errors import UnknownJobError
-from backup_engine.profile_store.sqlite_store import open_profile_store
+from backup_engine.profile_store.sqlite_store import SqliteProfileStore, open_profile_store
 from backup_engine.scheduling.models import BackupScheduleSpec
 
 
-def test_profile_store_backup_schedule_roundtrip(tmp_path: Path) -> None:
-    store = open_profile_store(profile_name="default", data_root=tmp_path)
+def _seed_job_state(*, data_root: Path) -> tuple[SqliteProfileStore, str]:
+    store = open_profile_store(profile_name="default", data_root=data_root)
     job_id = store.create_job("My Job")
+    binding = store.load_job_binding(job_id)
+    store.save_job_binding(
+        JobBinding(
+            job_id=job_id,
+            job_name="My Job",
+            template_id=binding.template_id,
+            source_root="C:/games/world",
+        )
+    )
+    store.save_template_compression(job_id=job_id, name="My Job", compression="zip")
+    return store, job_id
+
+
+def test_profile_store_backup_schedule_roundtrip(tmp_path: Path) -> None:
+    store, job_id = _seed_job_state(data_root=tmp_path)
 
     store.save_backup_schedule(
         BackupScheduleSpec(
             job_id=job_id,
-            source_root="C:/games/world",
+            source_root="scheduler-owned-trigger-only",
             cadence="weekly",
             start_time_local="06:45",
             weekdays=("MON", "WED"),
-            compression="zip",
+            compression="none",
         )
     )
 
@@ -36,16 +52,43 @@ def test_profile_store_backup_schedule_roundtrip(tmp_path: Path) -> None:
     assert store.load_job_binding(job_id).source_root == "C:/games/world"
 
 
-def test_profile_store_persists_trigger_without_writing_legacy_schedule_mirror(
-    tmp_path: Path,
-) -> None:
-    store = open_profile_store(profile_name="default", data_root=tmp_path)
-    job_id = store.create_job("My Job")
+def test_profile_store_interval_schedule_roundtrip(tmp_path: Path) -> None:
+    store, job_id = _seed_job_state(data_root=tmp_path)
 
     store.save_backup_schedule(
         BackupScheduleSpec(
             job_id=job_id,
-            source_root="C:/games/world",
+            source_root="scheduler-owned-trigger-only",
+            cadence="interval",
+            start_time_local="08:15",
+            weekdays=(),
+            compression="none",
+            interval_unit="minutes",
+            interval_value=10,
+        )
+    )
+
+    loaded = store.load_backup_schedule(job_id)
+
+    assert loaded.job_id == job_id
+    assert loaded.cadence == "interval"
+    assert loaded.start_time_local == "08:15"
+    assert loaded.weekdays == ()
+    assert loaded.interval_unit == "minutes"
+    assert loaded.interval_value == 10
+    assert loaded.source_root == "C:/games/world"
+    assert loaded.compression == "zip"
+
+
+def test_profile_store_persists_trigger_without_writing_legacy_schedule_mirror(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _seed_job_state(data_root=tmp_path)
+
+    store.save_backup_schedule(
+        BackupScheduleSpec(
+            job_id=job_id,
+            source_root="scheduler-owned-trigger-only",
             cadence="daily",
             start_time_local="07:00",
             weekdays=(),
@@ -69,20 +112,20 @@ def test_profile_store_persists_trigger_without_writing_legacy_schedule_mirror(
 
     assert "source_root" not in schedule_columns
     assert "compression" not in schedule_columns
+    assert "interval_unit" in schedule_columns
+    assert "interval_value" in schedule_columns
     assert legacy_table_row is None
 
 
 def test_profile_store_delete_backup_schedule_is_idempotent(tmp_path: Path) -> None:
-    store = open_profile_store(profile_name="default", data_root=tmp_path)
-    job_id = store.create_job("My Job")
+    _store, job_id = _seed_job_state(data_root=tmp_path)
 
-    store.delete_backup_schedule(job_id)
-    store.delete_backup_schedule(job_id)
+    _store.delete_backup_schedule(job_id)
+    _store.delete_backup_schedule(job_id)
 
 
 def test_profile_store_raises_for_missing_schedule(tmp_path: Path) -> None:
-    store = open_profile_store(profile_name="default", data_root=tmp_path)
-    job_id = store.create_job("My Job")
+    _store, job_id = _seed_job_state(data_root=tmp_path)
 
     with pytest.raises(UnknownJobError):
-        store.load_backup_schedule(job_id)
+        _store.load_backup_schedule(job_id)
