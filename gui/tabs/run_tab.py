@@ -54,7 +54,7 @@ from backup_engine.job_binding import JobBinding
 from backup_engine.profile_store.errors import UnknownJobError
 from backup_engine.profile_store.sqlite_store import open_profile_store
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
-from gui.settings_store import load_gui_settings
+from gui.settings_store import GuiSettings, load_gui_settings, save_gui_settings
 
 
 def _mono() -> QFont:
@@ -332,6 +332,7 @@ class RunTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._settings = load_gui_settings(data_root=None)
+        self._loading_settings = True
         self._active_job_id: str | None = None
         self._current_job_binding: JobBinding | None = None
         self._pending_select_job_id: str | None = None
@@ -389,6 +390,8 @@ class RunTab(QWidget):
         job_stack.addLayout(run_mode_row)
 
         self._apply_default_run_mode()
+        self.mode_combo.currentIndexChanged.connect(self._on_run_mode_changed)
+        self._loading_settings = False
 
         self.btn_backup_now = QPushButton("Backup Now")
         self.btn_backup_now.clicked.connect(self._backup_now)
@@ -458,6 +461,26 @@ class RunTab(QWidget):
             if str(self.mode_combo.itemData(i)) == mode:
                 self.mode_combo.setCurrentIndex(i)
                 return
+
+    def _on_run_mode_changed(self, *_args: object) -> None:
+        """
+        Persist the currently selected Run tab mode as a GUI preference.
+        """
+        if getattr(self, "_loading_settings", False):
+            return
+
+        selected_mode = str(self.mode_combo.currentData())
+        updated_settings = GuiSettings(
+            data_root=self._settings.data_root,
+            archives_root=self._settings.archives_root,
+            default_compression=self._settings.default_compression,
+            default_run_mode=selected_mode,
+            restore_mode=self._settings.restore_mode,
+            restore_verify=self._settings.restore_verify,
+            restore_dry_run=self._settings.restore_dry_run,
+        )
+        save_gui_settings(data_root=None, settings=updated_settings)
+        self._settings = updated_settings
 
     def _selected_job_id(self) -> str | None:
         if self.job_combo.currentIndex() < 0:

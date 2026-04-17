@@ -197,14 +197,14 @@ def run_backup(
     run_token = _resolve_run_token(run_clock)
     compression_requested = compress or (compression != "none")
     oz0_root = resolve_oz0_artifact_root(source_root)
-    archive_root = oz0_root if dry_run else paths.archives_root / run_token
+    run_root = oz0_root if dry_run else _build_noncompressed_run_root(oz0_root, run_token)
     if compression_requested:
         artifact_job_name = _resolve_artifact_job_name(
             job_name=job_name,
             job_id=job_id,
             source_root=source_root,
         )
-        archive_root = (
+        run_root = (
             _build_staging_root(
                 work_root=paths.work_root,
                 artifact_job_name=artifact_job_name,
@@ -233,15 +233,15 @@ def run_backup(
     )
     scan_result = scan_source_tree(source_root, scan_rules)
 
-    plan = build_backup_plan(entries=scan_result.entries, archive_root=archive_root)
+    plan = build_backup_plan(entries=scan_result.entries, archive_root=run_root)
     plan_with_issues = attach_scan_issues(plan, scan_result.issues)
 
     context = BackupRunContext(
         profile_name=profile_name,
         source_root=source_root,
-        artifact_root=oz0_root if dry_run or compression_requested else archive_root,
+        artifact_root=oz0_root,
         backup_origin=backup_origin,
-        staging_dir=archive_root if compression_requested and not dry_run else None,
+        staging_dir=run_root if compression_requested and not dry_run else None,
         root_label="Artifact root" if compression_requested else "Archive root",
     )
 
@@ -251,7 +251,10 @@ def run_backup(
     if dry_run:
         plan_text_path: Path | None = None
         if write_plan or plan_path is not None:
-            output_path = plan_path or (context.artifact_root / "plan.txt")
+            output_path = plan_path or _build_dry_run_plan_artifact_path(
+                artifact_root=context.artifact_root,
+                run_token=run_token,
+            )
             _write_plan_artifact(
                 output_path=output_path,
                 content=report_text,
@@ -288,7 +291,7 @@ def run_backup(
             assert archive_output_path is not None
             _, manifest_path = _run_compressed_backup(
                 plan=plan_with_issues,
-                run_root=archive_root,
+                run_root=run_root,
                 run_token=run_token,
                 oz0_root=oz0_root,
                 manifest_output_path=manifest_output_path,
@@ -315,7 +318,7 @@ def run_backup(
 
         materialized = materialize_backup_run(
             plan=plan_with_issues,
-            run_root=archive_root,
+            run_root=run_root,
             run_id=run_token,
             plan_text=report_text,
             profile_name=profile_name,
@@ -337,7 +340,7 @@ def run_backup(
                 run_id=run_token,
                 profile_name=profile_name,
                 source_root=source_root,
-                archive_root=archive_root,
+                archive_root=context.artifact_root,
                 dry_run=False,
                 report_text=report_text,
                 plan_text_path=materialized.plan_text_path,
@@ -431,13 +434,51 @@ def run_backup(
             run_id=run_token,
             profile_name=profile_name,
             source_root=source_root,
-            archive_root=archive_root,
+            archive_root=context.artifact_root,
             dry_run=False,
             report_text=report_text,
             plan_text_path=materialized.plan_text_path,
             manifest_path=materialized.manifest_path,
             executed=True,
         )
+
+
+def _build_noncompressed_run_root(artifact_root: Path, run_token: str) -> Path:
+    """
+    Return the materialized run directory for a non-compressed backup.
+
+    Parameters
+    ----------
+    artifact_root : Path
+        Final target-relative artifact root for the selected source.
+    run_token : str
+        Stable run identifier used to isolate one materialized backup run.
+
+    Returns
+    -------
+    Path
+        Concrete run directory under the authoritative artifact root.
+    """
+    return artifact_root / run_token
+
+
+def _build_dry_run_plan_artifact_path(*, artifact_root: Path, run_token: str) -> Path:
+    """
+    Return the default dry-run plan artifact path for a single plan run.
+
+    Parameters
+    ----------
+    artifact_root : Path
+        Authoritative OZ0 artifact root for the selected source.
+    run_token : str
+        Stable run identifier used to isolate one plan artifact from another.
+
+    Returns
+    -------
+    Path
+        Unique dry-run plan artifact path under the OZ0 root.
+    """
+    return artifact_root / f"plan_{run_token}.txt"
 
 
 def _run_compressed_backup(

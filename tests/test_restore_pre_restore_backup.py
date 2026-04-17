@@ -66,11 +66,11 @@ def _dummy_backup_result(root: Path) -> BackupRunResult:
         run_id="backup-run",
         profile_name="default",
         source_root=root,
-        archive_root=root.parent / "OZ0",
+        archive_root=root.parent / "live_world.OZ0",
         dry_run=False,
         report_text="ok",
         plan_text_path=None,
-        manifest_path=(root.parent / "OZ0" / "backup-run.manifest.json"),
+        manifest_path=(root.parent / "live_world.OZ0" / "backup-run.manifest.json"),
         executed=True,
     )
 
@@ -238,7 +238,7 @@ def test_pre_restore_backup_with_oz0_backed_live_job_writes_normal_oz0_artifacts
         clock=clock,
     )
 
-    oz0_root = destination_root.parent / "OZ0"
+    oz0_root = destination_root.parent / "live_world.OZ0"
     assert (oz0_root / "Minecraft.20250101_000000Z.OZ0.zip").is_file()
     assert (oz0_root / "Minecraft.20250101_000000Z.manifest.json").is_file()
 

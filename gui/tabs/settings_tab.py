@@ -131,11 +131,15 @@ class SettingsTab(QWidget):
         data_root_text = self.data_root_edit.text().strip()
         archives_root_text = self.archives_root_edit.text().strip()
 
+        current_settings = load_gui_settings(data_root=None)
         settings = GuiSettings(
             data_root=Path(data_root_text) if data_root_text else None,
             archives_root=Path(archives_root_text) if archives_root_text else None,
             default_compression=str(self.compression_combo.currentData()),
             default_run_mode=str(self.run_mode_combo.currentData()),
+            restore_mode=current_settings.restore_mode,
+            restore_verify=current_settings.restore_verify,
+            restore_dry_run=current_settings.restore_dry_run,
         )
 
         try:

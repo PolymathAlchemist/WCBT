@@ -33,8 +33,10 @@ from backup_engine.manifest_store import (
     write_json_atomic,
     write_manifest_json_atomic,
 )
+from backup_engine.oz0_paths import resolve_legacy_oz0_root, resolve_primary_oz0_root
 from backup_engine.paths_and_safety import resolve_profile_paths
 from backup_engine.profile_lock import acquire_profile_lock, build_profile_lock_path
+from backup_engine.profile_store.sqlite_store import open_profile_store
 
 
 class VerifyError(WcbtError):
@@ -183,7 +185,11 @@ def verify_run(
         force=force,
         break_lock=break_lock,
     ):
-        run_root = paths.archives_root / run_id
+        run_root = _resolve_run_root(
+            profile_name=profile_name,
+            run_id=run_id,
+            data_root=data_root,
+        )
         manifest_path = run_root / "manifest.json"
         manifest = read_manifest_json(manifest_path)
 
@@ -219,6 +225,61 @@ def verify_run(
         print(f"  Failed        : {counts.failed}")
         print(f"  Not applicable: {counts.not_applicable}")
         print(f"  Results written: {manifest_path}")
+
+
+def _resolve_run_root(*, profile_name: str, run_id: str, data_root: Path | None) -> Path:
+    """
+    Resolve the materialized run directory for verification.
+
+    Parameters
+    ----------
+    profile_name : str
+        Profile that owns the backup run.
+    run_id : str
+        Stable run identifier.
+    data_root : Path | None
+        Optional data root override.
+
+    Returns
+    -------
+    Path
+        Existing run directory for the requested run.
+
+    Raises
+    ------
+    VerifyError
+        If the run directory cannot be located.
+    """
+    paths = resolve_profile_paths(profile_name, data_root=data_root)
+    legacy_run_root = paths.archives_root / run_id
+    if legacy_run_root.is_dir():
+        return legacy_run_root
+
+    store = open_profile_store(profile_name=profile_name, data_root=data_root)
+    for job_summary in store.list_jobs():
+        binding = store.load_job_binding(job_summary.job_id)
+        if not binding.source_root.strip():
+            continue
+
+        source_root = Path(binding.source_root)
+        for oz0_root in (
+            resolve_primary_oz0_root(source_root),
+            resolve_legacy_oz0_root(source_root),
+        ):
+            candidate_root = oz0_root / run_id
+            manifest_path = candidate_root / "manifest.json"
+            if not manifest_path.is_file():
+                continue
+
+            try:
+                manifest = read_manifest_json(manifest_path)
+            except Exception:  # noqa: BLE001
+                continue
+
+            if manifest.get("run_id") == run_id and manifest.get("profile_name") == profile_name:
+                return candidate_root
+
+    raise VerifyError(f"Run directory not found for verification: {run_id}")
 
 
 def _verify_manifest(

@@ -8,6 +8,7 @@ Restore tab (engine-backed).
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -44,9 +45,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backup_engine.manifest_store import list_backup_runs
+from backup_engine.manifest_store import BackupRunSummary, list_backup_runs
+from backup_engine.oz0_paths import resolve_legacy_oz0_root, resolve_primary_oz0_root
+from backup_engine.profile_store.sqlite_store import open_profile_store
 from backup_engine.restore.service import RestoreRunResult, run_restore
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
+from gui.settings_store import GuiSettings, load_gui_settings, save_gui_settings
 
 _ALL_HISTORY_LABEL = "All history"
 
@@ -139,13 +143,14 @@ class RestoreWorker(QObject):
     finished = Signal(object)  # RestoreRunResult
     failed = Signal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, *, data_root: Path | None = None) -> None:
         super().__init__()
         self._manifest_path: Path | None = None
         self._destination_root: Path | None = None
         self._mode: str = "add-only"
         self._verify: str = "size"
         self._dry_run: bool = True
+        self._data_root = data_root
 
     def configure(
         self,
@@ -182,7 +187,7 @@ class RestoreWorker(QObject):
                 mode=self._mode,
                 verify=self._verify,
                 dry_run=self._dry_run,
-                data_root=None,
+                data_root=self._data_root,
             )
             self.finished.emit(result)
         except Exception as exc:
@@ -208,7 +213,13 @@ class RestoreTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
 
-        self._store = ProfileStoreAdapter(profile_name="default", data_root=None)
+        self._settings = load_gui_settings(data_root=None)
+        self._loading_settings = True
+        self._known_job_ids: list[str] = []
+        self._store = ProfileStoreAdapter(
+            profile_name="default",
+            data_root=self._settings.data_root,
+        )
         self._store.jobs_loaded.connect(self._on_jobs_loaded)
         self._store.error.connect(self._on_store_error)
         self._store.restore_defaults_loaded.connect(self._on_restore_defaults_loaded)
@@ -290,8 +301,12 @@ class RestoreTab(QWidget):
         self.btn_open_artifacts_root = QPushButton("Open artifacts root")
         self.btn_open_artifacts_root.clicked.connect(self._open_artifacts_root)
 
+        self.btn_housekeeping = QPushButton("Housekeeping...")
+        self.btn_housekeeping.clicked.connect(self._run_housekeeping)
+
         links_layout.addWidget(self.btn_open_manifest_folder)
         links_layout.addWidget(self.btn_open_artifacts_root)
+        links_layout.addWidget(self.btn_housekeeping)
         right_layout.addWidget(links)
 
         restore_box = QGroupBox("Restore")
@@ -318,7 +333,11 @@ class RestoreTab(QWidget):
         self.verify_combo = QComboBox()
         self.verify_combo.addItem("None", "none")
         self.verify_combo.addItem("Size", "size")
-        self.verify_combo.setCurrentIndex(1)  # default: Size
+        self._apply_restore_preferences()
+        self.mode_combo.currentIndexChanged.connect(self._on_restore_preferences_changed)
+        self.verify_combo.currentIndexChanged.connect(self._on_restore_preferences_changed)
+        self.dry_run.checkStateChanged.connect(self._on_restore_preferences_changed)
+        self._loading_settings = False
 
         opts_row = QWidget()
         opts_layout = QHBoxLayout(opts_row)
@@ -334,6 +353,10 @@ class RestoreTab(QWidget):
         self.btn_restore.clicked.connect(self._restore_selected)
         self.restore_layout.addRow("", self.btn_restore)
 
+        self.btn_copy_summary = QPushButton("Copy Restore Summary")
+        self.btn_copy_summary.clicked.connect(self._copy_restore_summary)
+        self.restore_layout.addRow("", self.btn_copy_summary)
+
         right_layout.addWidget(restore_box, 1)
 
         splitter.addWidget(left)
@@ -347,7 +370,7 @@ class RestoreTab(QWidget):
         self._last_result: RestoreRunResult | None = None
 
         self._thread = QThread(self)
-        self._worker = RestoreWorker()
+        self._worker = RestoreWorker(data_root=self._settings.data_root)
         self._worker.moveToThread(self._thread)
         self._worker.finished.connect(self._on_restore_finished)
         self._worker.failed.connect(self._on_restore_failed)
@@ -421,9 +444,11 @@ class RestoreTab(QWidget):
         try:
             self.job_combo.clear()
             self.job_combo.addItem(_ALL_HISTORY_LABEL, None)
+            self._known_job_ids = []
             for js in jobs:
                 job_id = str(getattr(js, "job_id"))
                 name = str(getattr(js, "name"))
+                self._known_job_ids.append(job_id)
                 self.job_combo.addItem(name, job_id)
             self.job_combo.setCurrentIndex(1 if len(jobs) > 0 else 0)
         finally:
@@ -466,6 +491,8 @@ class RestoreTab(QWidget):
             self.archive_root.blockSignals(False)
             self.dest.blockSignals(False)
 
+        self._refresh_history()
+
     def _on_restore_defaults_saved(self, job_id: str) -> None:
         # No UI action needed; this is here for future status indicators.
         _ = job_id
@@ -494,9 +521,186 @@ class RestoreTab(QWidget):
             },
         )
 
+    def _apply_restore_preferences(self) -> None:
+        """
+        Apply persisted Restore tab preferences to the current widgets.
+        """
+        self._select_combo_by_data(self.mode_combo, self._settings.restore_mode)
+        self._select_combo_by_data(self.verify_combo, self._settings.restore_verify)
+        self.dry_run.setChecked(self._settings.restore_dry_run)
+
+    @staticmethod
+    def _select_combo_by_data(combo: QComboBox, value: str) -> None:
+        for index in range(combo.count()):
+            if str(combo.itemData(index)) == value:
+                combo.setCurrentIndex(index)
+                return
+
+    def _on_restore_preferences_changed(self, *_args: object) -> None:
+        """
+        Persist the active Restore tab behavior preferences.
+        """
+        if getattr(self, "_loading_settings", False):
+            return
+
+        updated_settings = GuiSettings(
+            data_root=self._settings.data_root,
+            archives_root=self._settings.archives_root,
+            default_compression=self._settings.default_compression,
+            default_run_mode=self._settings.default_run_mode,
+            restore_mode=str(self.mode_combo.currentData()),
+            restore_verify=str(self.verify_combo.currentData()),
+            restore_dry_run=self.dry_run.isChecked(),
+        )
+        save_gui_settings(data_root=None, settings=updated_settings)
+        self._settings = updated_settings
+
+    def _open_store(self):
+        """
+        Open the profile store using the persisted GUI settings context.
+        """
+        return open_profile_store(profile_name="default", data_root=self._settings.data_root)
+
+    def _load_selected_job_binding_source_root(self) -> Path | None:
+        """
+        Return the selected job's persisted source root, if available.
+
+        Returns
+        -------
+        Path | None
+            Source root for the selected job, or ``None`` when unavailable.
+        """
+        selected_job_id = self._selected_job_id()
+        if selected_job_id is None:
+            return None
+
+        try:
+            binding = self._open_store().load_job_binding(selected_job_id)
+        except Exception:
+            return None
+
+        if not binding.source_root.strip():
+            return None
+        return Path(binding.source_root)
+
+    def _derive_history_roots_from_jobs(self, selected_job_id: str | None) -> list[Path]:
+        """
+        Return OZ0 roots derived from live job bindings.
+
+        Parameters
+        ----------
+        selected_job_id : str | None
+            Selected job identifier, or ``None`` to derive roots for all known jobs.
+
+        Returns
+        -------
+        list[Path]
+            Unique OZ0 roots derived from persisted job bindings, preferring the
+            target-partitioned layout before the legacy shared root.
+        """
+        target_job_ids = [selected_job_id] if selected_job_id is not None else self._known_job_ids
+        if not target_job_ids:
+            return []
+
+        roots_by_key: dict[str, Path] = {}
+        store = self._open_store()
+        for job_id in target_job_ids:
+            try:
+                binding = store.load_job_binding(job_id)
+            except Exception:
+                continue
+            if not binding.source_root.strip():
+                continue
+            source_root = Path(binding.source_root)
+            for root in (
+                resolve_primary_oz0_root(source_root),
+                resolve_legacy_oz0_root(source_root),
+            ):
+                roots_by_key[str(root)] = root
+        return list(roots_by_key.values())
+
+    def _resolve_history_roots(self) -> list[Path]:
+        """
+        Return the artifact roots that should be scanned for restore history.
+
+        Returns
+        -------
+        list[Path]
+            Root directories to scan with manifest discovery.
+        """
+        roots_by_key: dict[str, Path] = {}
+        archive_text = self.archive_root.text().strip()
+        if archive_text:
+            manual_root = Path(archive_text)
+            roots_by_key[str(manual_root)] = manual_root
+
+        for derived_root in self._derive_history_roots_from_jobs(self._selected_job_id()):
+            roots_by_key[str(derived_root)] = derived_root
+        return list(roots_by_key.values())
+
+    def _resolve_authoritative_artifacts_root(self) -> Path | None:
+        """
+        Resolve the authoritative artifacts root for the current Restore tab context.
+
+        Returns
+        -------
+        Path | None
+            Manual archive root when provided, otherwise the selected job's
+            preferred OZ0 root. Returns ``None`` when neither is available.
+        """
+        archive_text = self.archive_root.text().strip()
+        if archive_text:
+            return Path(archive_text)
+
+        source_root = self._load_selected_job_binding_source_root()
+        if source_root is None:
+            return None
+        return resolve_primary_oz0_root(source_root)
+
+    def _housekeeping_base_roots(self) -> list[Path]:
+        """
+        Return roots whose sibling transient restore residue may be cleaned.
+
+        Returns
+        -------
+        list[Path]
+            Unique base roots used to derive safe transient cleanup targets.
+        """
+        roots_by_key: dict[str, Path] = {}
+
+        destination_text = self.dest.text().strip()
+        if destination_text:
+            destination_root = Path(destination_text)
+            roots_by_key[str(destination_root)] = destination_root
+
+        source_root = self._load_selected_job_binding_source_root()
+        if source_root is not None:
+            roots_by_key[str(source_root)] = source_root
+
+        return list(roots_by_key.values())
+
+    def _collect_housekeeping_targets(self) -> list[Path]:
+        """
+        Collect safe transient restore residue paths for manual cleanup.
+
+        Returns
+        -------
+        list[Path]
+            Existing transient directories safe to delete.
+        """
+        targets_by_key: dict[str, Path] = {}
+        for base_root in self._housekeeping_base_roots():
+            for candidate in (
+                base_root.with_name(f"{base_root.name}.wcbt_stage"),
+                base_root.with_name(f"{base_root.name}.wcbt_restore_extract"),
+            ):
+                if candidate.exists() and candidate.is_dir():
+                    targets_by_key[str(candidate)] = candidate
+        return list(targets_by_key.values())
+
     def _refresh_history(self) -> None:
         needle = self.filter_edit.text().strip().lower()
-        archive_text = self.archive_root.text().strip()
+        history_roots = self._resolve_history_roots()
 
         self.history.clear()
         self._selected_manifest_path = None
@@ -506,19 +710,31 @@ class RestoreTab(QWidget):
         if hasattr(self, "restore_resolution"):
             self.restore_resolution.setPlainText("")
 
-        if not archive_text:
+        if not history_roots:
             self.details.setPlainText(
-                "Choose an archive root to scan for manifests, including historical runs."
+                "Choose an archive root or select a job with a saved source root to scan "
+                "authoritative OZ0 manifests, including historical runs."
             )
             return
 
-        root = Path(archive_text)
-        if not root.exists() or not root.is_dir():
+        invalid_roots = [root for root in history_roots if not root.exists() or not root.is_dir()]
+        if len(invalid_roots) == len(history_roots):
             self.details.setPlainText("Archive root does not exist.")
             return
 
         selected_job_id = self._selected_job_id()
-        runs = list_backup_runs(root, limit=500)
+        runs_by_manifest_path: dict[Path, BackupRunSummary] = {}
+        for root in history_roots:
+            if not root.exists() or not root.is_dir():
+                continue
+            for run in list_backup_runs(root, limit=500):
+                runs_by_manifest_path[run.manifest_path] = run
+
+        runs = sorted(
+            runs_by_manifest_path.values(),
+            key=lambda run: getattr(run, "modified_at_utc"),
+            reverse=True,
+        )
 
         for r in runs:
             if selected_job_id is not None and r.job_id is not None and r.job_id != selected_job_id:
@@ -538,6 +754,12 @@ class RestoreTab(QWidget):
             self.history.setCurrentRow(0)
         else:
             self.details.setPlainText("No manifests found (with current filter).")
+
+    def refresh_on_activate(self) -> None:
+        """
+        Refresh restore history when the Restore tab becomes active.
+        """
+        self._refresh_history()
 
     def _build_restore_summary(self) -> str:
         manifest_path = self._selected_manifest_path
@@ -694,9 +916,6 @@ class RestoreTab(QWidget):
         self.restore_resolution.setPlainText("\n".join(resolution_lines))
 
         allowed, reason = self._restore_preflight(manifest_path)
-        self.btn_copy_summary = QPushButton("Copy Restore Summary")
-        self.btn_copy_summary.clicked.connect(self._copy_restore_summary)
-        self.restore_layout.addRow("", self.btn_copy_summary)
         self.btn_restore.setEnabled(allowed)
 
         if not allowed and reason:
@@ -717,10 +936,49 @@ class RestoreTab(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _open_artifacts_root(self) -> None:
-        if self._last_result is None:
-            QMessageBox.information(self, "Artifacts", "Run a restore first.")
+        root = self._resolve_authoritative_artifacts_root()
+        if root is None:
+            QMessageBox.information(
+                self,
+                "Artifacts",
+                "Choose an archive root or select a job with a saved source root first.",
+            )
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_result.artifacts_root)))
+        root.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+    def _run_housekeeping(self) -> None:
+        """
+        Delete known-safe transient restore residue after user confirmation.
+        """
+        targets = self._collect_housekeeping_targets()
+        if not targets:
+            QMessageBox.information(
+                self,
+                "Housekeeping",
+                "No transient restore residue was found for the current destination or job.",
+            )
+            return
+
+        details = "\n".join(f"  - {target}" for target in targets)
+        answer = QMessageBox.question(
+            self,
+            "Housekeeping",
+            "Delete the following transient restore residue?\n\n"
+            f"{details}\n\n"
+            "This removes only known-safe temporary restore folders.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        for target in targets:
+            shutil.rmtree(target, ignore_errors=False)
+
+        QMessageBox.information(
+            self,
+            "Housekeeping",
+            f"Removed {len(targets)} transient restore folder(s).",
+        )
 
     def _pick_archive_root(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Select archive root")

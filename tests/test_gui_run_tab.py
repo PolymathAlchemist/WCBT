@@ -65,7 +65,7 @@ def test_backup_worker_plan_mode_uses_oz0_artifact_root_in_report_text(tmp_path:
 
     result = cast(BackupRunResult, finished_results[0])
     report_lines = result.report_text.splitlines()
-    expected_oz0_root = source_root.parent / "OZ0"
+    expected_oz0_root = source_root.parent / "testing.OZ0"
 
     assert f"Source root : {source_root}" in report_lines
     assert "Backup origin: Normal backup" in report_lines
@@ -87,6 +87,30 @@ class _FakeProfileStoreAdapter(QObject):
 
     def shutdown(self) -> None:
         pass
+
+
+def test_run_tab_persists_last_selected_run_mode_across_reopen(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.settings_store.default_data_root", lambda: tmp_path)
+    monkeypatch.setattr("gui.tabs.run_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+
+    first_tab = RunTab()
+    try:
+        for index in range(first_tab.mode_combo.count()):
+            if str(first_tab.mode_combo.itemData(index)) == "execute+compress":
+                first_tab.mode_combo.setCurrentIndex(index)
+                break
+    finally:
+        first_tab.shutdown()
+
+    reopened_tab = RunTab()
+    try:
+        assert str(reopened_tab.mode_combo.currentData()) == "execute+compress"
+    finally:
+        reopened_tab.shutdown()
 
 
 def test_run_tab_plan_mode_visible_summary_and_open_folder_use_oz0_root(
@@ -140,7 +164,7 @@ def test_run_tab_plan_mode_visible_summary_and_open_folder_use_oz0_root(
         worker.run()
 
         summary_text = tab.summary.toPlainText()
-        expected_oz0_root = source_root.parent / "OZ0"
+        expected_oz0_root = source_root.parent / "testing.OZ0"
         legacy_archives_root = str(data_root / "profiles" / "default" / "archives")
 
         assert "Backup origin: Normal backup" in summary_text
@@ -216,7 +240,7 @@ def test_run_tab_backup_now_refreshes_live_settings_for_oz0_plan_mode(
 
         tab._backup_now()  # noqa: SLF001
 
-        expected_oz0_root = source_root.parent / "OZ0"
+        expected_oz0_root = source_root.parent / "testing.OZ0"
         legacy_archives_root = str(data_root / "profiles" / "default" / "archives")
         summary_text = tab.summary.toPlainText()
 
@@ -282,7 +306,7 @@ def test_run_tab_plan_only_without_compression_uses_oz0_root(
         tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
         tab._backup_now()  # noqa: SLF001
 
-        expected_oz0_root = source_root.parent / "OZ0"
+        expected_oz0_root = source_root.parent / "testing.OZ0"
         legacy_archives_root = str(data_root / "profiles" / "default" / "archives")
         summary_text = tab.summary.toPlainText()
 
@@ -290,7 +314,7 @@ def test_run_tab_plan_only_without_compression_uses_oz0_root(
         assert legacy_archives_root not in summary_text
         assert tab._last_result is not None  # noqa: SLF001
         assert tab._last_result.archive_root == expected_oz0_root  # noqa: SLF001
-        assert (expected_oz0_root / "plan.txt").is_file()
+        assert len(list(expected_oz0_root.glob("plan_*.txt"))) == 1
 
         tab._open_artifacts()  # noqa: SLF001
 
@@ -346,7 +370,7 @@ def test_run_tab_backup_now_plan_only_keeps_oz0_root_out_of_profile_archives(
         tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
         tab._backup_now()  # noqa: SLF001
 
-        expected_oz0_root = source_root.parent / "OZ0"
+        expected_oz0_root = source_root.parent / "testing.OZ0"
         legacy_archives_root = str(data_root / "profiles" / "default" / "archives")
         summary_text = tab.summary.toPlainText()
 

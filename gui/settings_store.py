@@ -22,6 +22,9 @@ class GuiSettings:
     archives_root: Path | None
     default_compression: str  # "tar.zst" | "zip" | "none"
     default_run_mode: str  # "plan" | "materialize" | "execute" | "execute+compress"
+    restore_mode: str = "add-only"  # "add-only" | "overwrite"
+    restore_verify: str = "size"  # "none" | "size"
+    restore_dry_run: bool = True
 
     @staticmethod
     def defaults() -> "GuiSettings":
@@ -30,6 +33,9 @@ class GuiSettings:
             archives_root=None,
             default_compression="none",
             default_run_mode="plan",
+            restore_mode="add-only",
+            restore_verify="size",
+            restore_dry_run=True,
         )
 
 
@@ -77,11 +83,26 @@ def load_gui_settings(*, data_root: Path | None) -> GuiSettings:
         if default_run_mode not in {"plan", "materialize", "execute", "execute+compress"}:
             default_run_mode = "plan"
 
+        restore_mode = payload.get("restore_mode", "add-only")
+        if restore_mode not in {"add-only", "overwrite"}:
+            restore_mode = "add-only"
+
+        restore_verify = payload.get("restore_verify", "size")
+        if restore_verify not in {"none", "size"}:
+            restore_verify = "size"
+
+        restore_dry_run = payload.get("restore_dry_run", True)
+        if not isinstance(restore_dry_run, bool):
+            restore_dry_run = True
+
         return GuiSettings(
             data_root=data_root_val,
             archives_root=archives_root_val,
             default_compression=str(default_compression),
             default_run_mode=str(default_run_mode),
+            restore_mode=str(restore_mode),
+            restore_verify=str(restore_verify),
+            restore_dry_run=restore_dry_run,
         )
     except FileNotFoundError:
         return GuiSettings.defaults()
@@ -110,5 +131,8 @@ def save_gui_settings(*, data_root: Path | None, settings: GuiSettings) -> None:
         else None,
         "default_compression": settings.default_compression,
         "default_run_mode": settings.default_run_mode,
+        "restore_mode": settings.restore_mode,
+        "restore_verify": settings.restore_verify,
+        "restore_dry_run": settings.restore_dry_run,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")

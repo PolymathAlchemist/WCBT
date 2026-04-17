@@ -133,24 +133,39 @@ class AppWindow(QWidget):
 
         root.addWidget(header)
 
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()
 
         self.run_tab = RunTab()
-        tabs.addTab(self.run_tab, "Run")
+        self.tabs.addTab(self.run_tab, "Run")
 
         self.restore_tab = RestoreTab()
-        tabs.addTab(self.restore_tab, "Restore")
+        self.tabs.addTab(self.restore_tab, "Restore")
 
         self.authoring_tab = AuthoringTab()
-        tabs.addTab(self.authoring_tab, "Authoring")
+        self.tabs.addTab(self.authoring_tab, "Authoring")
 
         self.scheduling_tab = SchedulingTab()
-        tabs.addTab(self.scheduling_tab, "Scheduling")
+        self.tabs.addTab(self.scheduling_tab, "Scheduling")
 
         self.settings_tab = SettingsTab()
-        tabs.addTab(self.settings_tab, "Settings")
+        self.tabs.addTab(self.settings_tab, "Settings")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
-        root.addWidget(tabs, 1)
+        root.addWidget(self.tabs, 1)
+
+    def _on_tab_changed(self, index: int) -> None:
+        """
+        Refresh tab-owned dynamic state when a tab becomes active.
+
+        Parameters
+        ----------
+        index:
+            Newly selected tab index.
+        """
+        if not hasattr(self, "tabs"):
+            return
+        if self.tabs.widget(index) is self.restore_tab:
+            self.restore_tab.refresh_on_activate()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         """

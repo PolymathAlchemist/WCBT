@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -125,7 +126,7 @@ def test_end_to_end_backup_then_restore_verify_size_and_artifacts_survive(tmp_pa
         break_lock=True,
     )
 
-    manifest_path = _find_single_backup_manifest(data_root)
+    manifest_path = _find_single_backup_manifest(source_root.parent / "source.OZ0")
 
     # Restore into a clean destination root.
     run_restore(
@@ -186,13 +187,13 @@ def test_end_to_end_backup_compress_zip_then_restore_from_archive(tmp_path: Path
         job_name="photos",
     )
 
-    archive_path = _find_single_backup_archive(source_root.parent / "OZ0")
+    archive_path = _find_single_backup_archive(source_root.parent / "source.OZ0")
     assert archive_path.exists()
-    assert archive_path.parent.name == "OZ0"
-    assert archive_path.parent == source_root.parent / "OZ0"
+    assert archive_path.parent.name == "source.OZ0"
+    assert archive_path.parent == source_root.parent / "source.OZ0"
     assert archive_path.name == "photos.20260102_030405Z.OZ0.zip"
 
-    manifest_path = _find_single_backup_manifest(source_root.parent / "OZ0")
+    manifest_path = _find_single_backup_manifest(source_root.parent / "source.OZ0")
     assert manifest_path.parent == archive_path.parent
     assert manifest_path.name == "photos.20260102_030405Z.manifest.json"
 
@@ -202,7 +203,7 @@ def test_end_to_end_backup_compress_zip_then_restore_from_archive(tmp_path: Path
     assert "archive" in payload, (
         "Expected run manifest to include archive metadata after compression."
     )
-    assert Path(payload["archive_root"]) == source_root.parent / "OZ0"
+    assert Path(payload["archive_root"]) == source_root.parent / "source.OZ0"
     assert payload["archive"]["relative_path"] == archive_path.name
     assert all("destination_path" not in operation for operation in payload["operations"])
     execution = payload.get("execution", {})
@@ -266,7 +267,7 @@ def test_end_to_end_backup_compress_derives_oz0_root_from_source_parent(tmp_path
         job_name="Minecraft",
     )
 
-    expected_oz0_root = tmp_path / "OZ0"
+    expected_oz0_root = tmp_path / "testing.OZ0"
     expected_archive = expected_oz0_root / "Minecraft.20260416_163955Z.OZ0.zip"
     expected_manifest = expected_oz0_root / "Minecraft.20260416_163955Z.manifest.json"
 
@@ -309,11 +310,66 @@ def test_backup_manifest_persists_gui_job_identity(tmp_path: Path) -> None:
         job_name="Job A",
     )
 
-    manifest_path = _find_single_backup_manifest(data_root)
+    manifest_path = _find_single_backup_manifest(source_root.parent / "source.OZ0")
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert payload["job_id"] == "job-a-id"
     assert payload["job_name"] == "Job A"
+
+
+def test_restore_accepts_manifest_from_legacy_oz0_layout(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    data_root = tmp_path / "data_root"
+    restore_destination = tmp_path / "restore_destination"
+
+    files = [
+        _FileSpec(relative_path=Path("alpha.txt"), content=b"alpha\n"),
+        _FileSpec(relative_path=Path("nested") / "beta.bin", content=b"\x00\x01\x02\x03"),
+    ]
+
+    _write_source_tree(source_root, files)
+
+    run_backup(
+        profile_name="end_to_end",
+        source=source_root,
+        dry_run=False,
+        data_root=data_root,
+        excluded_directory_names=None,
+        excluded_file_names=None,
+        use_default_excludes=True,
+        max_items=100,
+        write_plan=False,
+        plan_path=None,
+        overwrite_plan=False,
+        clock=None,
+        execute=True,
+        force=True,
+        break_lock=True,
+    )
+
+    primary_root = source_root.parent / "source.OZ0"
+    primary_manifest_path = _find_single_backup_manifest(primary_root)
+    legacy_run_root = source_root.parent / "OZ0" / primary_manifest_path.parent.name
+    shutil.copytree(primary_manifest_path.parent, legacy_run_root)
+
+    legacy_manifest_path = legacy_run_root / "manifest.json"
+    legacy_payload = json.loads(legacy_manifest_path.read_text(encoding="utf-8"))
+    legacy_payload["archive_root"] = str(legacy_run_root)
+    legacy_manifest_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    shutil.rmtree(primary_root)
+
+    run_restore(
+        manifest_path=legacy_manifest_path,
+        destination_root=restore_destination,
+        mode="overwrite",
+        verify="size",
+        dry_run=False,
+        data_root=data_root,
+        clock=None,
+    )
+
+    _assert_tree_matches(source_root, restore_destination, files)
 
 
 def test_standard_backup_manifest_defaults_backup_origin_to_normal(tmp_path: Path) -> None:
@@ -343,7 +399,7 @@ def test_standard_backup_manifest_defaults_backup_origin_to_normal(tmp_path: Pat
         break_lock=True,
     )
 
-    manifest_path = _find_single_backup_manifest(data_root)
+    manifest_path = _find_single_backup_manifest(source_root.parent / "source.OZ0")
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert payload["backup_origin"] == "normal"

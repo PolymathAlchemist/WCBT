@@ -12,7 +12,9 @@ import backup_engine.backup.service as backup_service
 from backup_engine.backup.service import run_backup
 from backup_engine.clock import FixedClock
 from backup_engine.errors import BackupExecutionError
+from backup_engine.job_binding import JobBinding
 from backup_engine.paths_and_safety import resolve_profile_paths
+from backup_engine.profile_store.sqlite_store import open_profile_store
 
 
 def _expect_mapping(value: object) -> Mapping[str, object]:
@@ -34,6 +36,24 @@ def _read_json(path: Path) -> dict[str, object]:
     return cast(dict[str, object], payload)
 
 
+def _create_job_binding(
+    *, profile_name: str, data_root: Path, source_root: Path
+) -> tuple[str, str]:
+    store = open_profile_store(profile_name=profile_name, data_root=data_root)
+    job_name = "Minecraft"
+    job_id = store.create_job(job_name)
+    binding = store.load_job_binding(job_id)
+    store.save_job_binding(
+        JobBinding(
+            job_id=binding.job_id,
+            job_name=job_name,
+            template_id=binding.template_id,
+            source_root=str(source_root),
+        )
+    )
+    return job_id, job_name
+
+
 def test_execute_copies_files_and_records_results(tmp_path: Path) -> None:
     profile_name = "test_profile"
     paths = resolve_profile_paths(profile_name, data_root=tmp_path)
@@ -44,8 +64,9 @@ def test_execute_copies_files_and_records_results(tmp_path: Path) -> None:
     (source_root / "nested" / "b.txt").write_text("bravo", encoding="utf-8")
 
     clock = FixedClock(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc))
+    _create_job_binding(profile_name=profile_name, data_root=tmp_path, source_root=source_root)
 
-    run_backup(
+    result = run_backup(
         profile_name=profile_name,
         source=source_root,
         dry_run=False,
@@ -56,7 +77,10 @@ def test_execute_copies_files_and_records_results(tmp_path: Path) -> None:
         execute=True,
     )
 
-    run_root = paths.archives_root / "20250101_000000Z"
+    expected_oz0_root = source_root.parent / "source.OZ0"
+    run_root = expected_oz0_root / "20250101_000000Z"
+    assert result.archive_root == expected_oz0_root
+    assert str(paths.archives_root) not in result.report_text
     assert run_root.is_dir()
     assert (run_root / "plan.txt").is_file()
     assert (run_root / "manifest.json").is_file()
@@ -79,13 +103,13 @@ def test_execute_copies_files_and_records_results(tmp_path: Path) -> None:
 
 def test_execute_fails_fast_on_reserved_destination_collision(tmp_path: Path) -> None:
     profile_name = "test_profile"
-    paths = resolve_profile_paths(profile_name, data_root=tmp_path)
 
     source_root = tmp_path / "source"
     source_root.mkdir()
     (source_root / "plan.txt").write_text("I am a source file named plan.txt", encoding="utf-8")
 
     clock = FixedClock(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc))
+    _create_job_binding(profile_name=profile_name, data_root=tmp_path, source_root=source_root)
 
     with pytest.raises(BackupExecutionError):
         run_backup(
@@ -99,7 +123,7 @@ def test_execute_fails_fast_on_reserved_destination_collision(tmp_path: Path) ->
             execute=True,
         )
 
-    run_root = paths.archives_root / "20250101_000000Z"
+    run_root = source_root.parent / "source.OZ0" / "20250101_000000Z"
     assert run_root.is_dir()
     assert (run_root / "plan.txt").is_file()
     assert (run_root / "manifest.json").is_file()
@@ -148,7 +172,7 @@ def test_compressed_backup_preserves_staging_when_archive_creation_fails(
     assert staging_root.is_dir()
     assert (staging_root / "a.txt").is_file()
 
-    oz0_root = source_root.parent / "OZ0"
+    oz0_root = source_root.parent / "source.OZ0"
     assert not oz0_root.exists()
 
 
@@ -183,7 +207,7 @@ def test_compressed_backup_keeps_archive_when_manifest_write_fails(
         job_name="photos",
     )
 
-    archive_path = source_root.parent / "OZ0" / "photos.20250101_000000Z.OZ0.zip"
+    archive_path = source_root.parent / "source.OZ0" / "photos.20250101_000000Z.OZ0.zip"
     assert archive_path.is_file()
     assert result.manifest_path is None
 
@@ -218,7 +242,7 @@ def test_compressed_backup_report_distinguishes_staging_and_artifact_root(tmp_pa
     assert "Staging dir :" in result.report_text
     assert str(paths.work_root / "oz0_staging" / "Minecraft.20250101_000000Z") in result.report_text
     assert "Artifact root:" in result.report_text
-    assert str(source_root.parent / "OZ0") in result.report_text
+    assert str(source_root.parent / "source.OZ0") in result.report_text
     assert "Archive root: " not in result.report_text
 
 
@@ -243,9 +267,10 @@ def test_compressed_plan_mode_uses_same_oz0_artifact_root_as_execution(tmp_path:
         job_name="Minecraft",
     )
 
-    expected_oz0_root = source_root.parent / "OZ0"
+    expected_oz0_root = source_root.parent / "testing.OZ0"
+    expected_plan_path = expected_oz0_root / "plan_20250101_000000Z.txt"
     assert result.archive_root == expected_oz0_root
-    assert result.plan_text_path == expected_oz0_root / "plan.txt"
+    assert result.plan_text_path == expected_plan_path
     assert result.plan_text_path is not None and result.plan_text_path.is_file()
     assert "Artifact root:" in result.report_text
     assert str(expected_oz0_root) in result.report_text
@@ -273,9 +298,126 @@ def test_uncompressed_plan_mode_writes_plan_to_oz0_root(tmp_path: Path) -> None:
         job_name="Minecraft",
     )
 
-    expected_oz0_root = source_root.parent / "OZ0"
+    expected_oz0_root = source_root.parent / "testing.OZ0"
+    expected_plan_path = expected_oz0_root / "plan_20250101_000000Z.txt"
     assert result.archive_root == expected_oz0_root
-    assert result.plan_text_path == expected_oz0_root / "plan.txt"
+    assert result.plan_text_path == expected_plan_path
     assert result.plan_text_path is not None and result.plan_text_path.is_file()
     assert f"Archive root: {expected_oz0_root}" in result.report_text
     assert str(expected_oz0_root) in result.plan_text_path.read_text(encoding="utf-8")
+
+
+def test_dry_run_plan_mode_uses_unique_run_tokenized_plan_paths_across_repeated_runs(
+    tmp_path: Path,
+) -> None:
+    profile_name = "test_profile"
+    data_root = tmp_path / "data_root"
+    source_root = tmp_path / "testing"
+    source_root.mkdir()
+    (source_root / "a.txt").write_text("alpha", encoding="utf-8")
+
+    first_result = run_backup(
+        profile_name=profile_name,
+        source=source_root,
+        dry_run=True,
+        data_root=data_root,
+        max_items=100,
+        write_plan=True,
+        clock=FixedClock(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)),
+        compression="none",
+        job_name="Minecraft",
+    )
+    second_result = run_backup(
+        profile_name=profile_name,
+        source=source_root,
+        dry_run=True,
+        data_root=data_root,
+        max_items=100,
+        write_plan=True,
+        clock=FixedClock(datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc)),
+        compression="none",
+        job_name="Minecraft",
+    )
+
+    expected_oz0_root = source_root.parent / "testing.OZ0"
+    first_plan_path = expected_oz0_root / "plan_20250101_000000Z.txt"
+    second_plan_path = expected_oz0_root / "plan_20250101_000001Z.txt"
+
+    assert first_result.plan_text_path == first_plan_path
+    assert second_result.plan_text_path == second_plan_path
+    assert first_plan_path.is_file()
+    assert second_plan_path.is_file()
+    assert first_plan_path.read_text(encoding="utf-8") == first_result.report_text
+    assert second_plan_path.read_text(encoding="utf-8") == second_result.report_text
+
+
+@pytest.mark.parametrize(
+    ("dry_run", "execute", "compress", "compression", "expected_plan_path"),
+    [
+        (True, False, False, "none", "plan_20250101_000000Z.txt"),
+        (False, False, False, "none", "20250101_000000Z/plan.txt"),
+        (False, True, False, "none", "20250101_000000Z/plan.txt"),
+        (False, True, True, "zip", None),
+    ],
+)
+def test_all_backup_modes_use_target_relative_oz0_root(
+    tmp_path: Path,
+    dry_run: bool,
+    execute: bool,
+    compress: bool,
+    compression: str,
+    expected_plan_path: str | None,
+) -> None:
+    profile_name = "test_profile"
+    data_root = tmp_path / "data_root"
+    paths = resolve_profile_paths(profile_name, data_root=data_root)
+
+    source_root = tmp_path / "testing"
+    source_root.mkdir()
+    (source_root / "a.txt").write_text("alpha", encoding="utf-8")
+
+    job_id, job_name = _create_job_binding(
+        profile_name=profile_name,
+        data_root=data_root,
+        source_root=source_root,
+    )
+    clock = FixedClock(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc))
+
+    result = run_backup(
+        profile_name=profile_name,
+        source=source_root,
+        dry_run=dry_run,
+        data_root=data_root,
+        max_items=100,
+        write_plan=dry_run,
+        clock=clock,
+        execute=execute,
+        compress=compress,
+        compression=compression,
+        force=True,
+        break_lock=True,
+        job_id=job_id,
+        job_name=job_name,
+    )
+
+    expected_oz0_root = source_root.parent / "testing.OZ0"
+    assert result.archive_root == expected_oz0_root
+    assert not str(result.archive_root).startswith(str(paths.archives_root))
+    assert str(paths.archives_root) not in result.report_text
+
+    if expected_plan_path is not None:
+        expected_plan = expected_oz0_root / Path(expected_plan_path)
+        assert result.plan_text_path == expected_plan
+        assert expected_plan.is_file()
+        if dry_run:
+            assert result.manifest_path is None
+        else:
+            assert result.manifest_path == expected_plan.parent / "manifest.json"
+            assert result.manifest_path is not None and result.manifest_path.is_file()
+    else:
+        expected_archive = expected_oz0_root / "Minecraft.20250101_000000Z.OZ0.zip"
+        expected_manifest = expected_oz0_root / "Minecraft.20250101_000000Z.manifest.json"
+        assert result.plan_text_path is None
+        assert result.manifest_path == expected_manifest
+        assert expected_archive.is_file()
+        assert expected_manifest.is_file()
