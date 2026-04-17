@@ -304,3 +304,65 @@ def test_restore_history_details_show_normal_backup_origin(
         assert "backup_origin: Normal backup" in details_text
     finally:
         tab.shutdown()
+
+
+def test_restore_summary_shows_backup_origin_labels(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+
+    archive_root = tmp_path / "archive"
+    manifests = [
+        ("run-normal", "normal", "Normal backup"),
+        ("run-scheduled", "scheduled", "Scheduled backup"),
+        ("run-pre-restore", "pre_restore", "Pre-restore safeguard backup"),
+    ]
+
+    for run_id, backup_origin, _expected_label in manifests:
+        _write_manifest(
+            archive_root / run_id / "manifest.json",
+            {
+                "schema_version": "wcbt_run_manifest_v2",
+                "run_id": run_id,
+                "created_at_utc": "2026-01-07T00:00:00Z",
+                "archive_root": str(archive_root),
+                "plan_text_path": str(archive_root / run_id / "plan.txt"),
+                "profile_name": "default",
+                "source_root": "C:/source",
+                "backup_origin": backup_origin,
+                "operations": [],
+                "scan_issues": [],
+            },
+        )
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([])  # noqa: SLF001
+        tab.archive_root.setText(str(archive_root))
+        tab.dest.setText(str(tmp_path / "restore-destination"))
+
+        summary_by_run_id: dict[str, str] = {}
+        for index in range(tab.history.count()):
+            item = tab.history.item(index)
+            tab.history.setCurrentItem(item)
+            summary_by_run_id[item.text()] = tab._build_restore_summary()  # noqa: SLF001
+
+        assert any(
+            "backup_origin: Normal backup" in summary
+            for history_text, summary in summary_by_run_id.items()
+            if "run-normal" in history_text
+        )
+        assert any(
+            "backup_origin: Scheduled backup" in summary
+            for history_text, summary in summary_by_run_id.items()
+            if "run-scheduled" in history_text
+        )
+        assert any(
+            "backup_origin: Pre-restore safeguard backup" in summary
+            for history_text, summary in summary_by_run_id.items()
+            if "run-pre-restore" in history_text
+        )
+    finally:
+        tab.shutdown()

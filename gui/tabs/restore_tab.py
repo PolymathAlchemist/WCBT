@@ -555,6 +555,10 @@ class RestoreTab(QWidget):
         lines.append(f"mode: {str(self.mode_combo.currentData())}")
         lines.append(f"verify: {str(self.verify_combo.currentData())}")
         lines.append(f"dry_run: {str(self.dry_run.isChecked()).lower()}")
+        manifest_summary = _safe_read_manifest_summary(manifest_path)
+        backup_origin_value = manifest_summary.get("backup_origin")
+        if isinstance(backup_origin_value, str):
+            lines.append(f"backup_origin: {backup_origin_value}")
 
         # Reuse existing resolution logic for consistency.
         lines.append("")
