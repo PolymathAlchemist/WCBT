@@ -337,6 +337,11 @@ def run_backup(
             backup_note=resolved_backup_note,
             job_id=job_id,
             job_name=job_name,
+            archive_format=None,
+            compression_method=None,
+            compression_level=None,
+            archive_writer_version=None,
+            archive_extension=None,
         )
 
         print()
@@ -377,54 +382,64 @@ def run_backup(
             if compress and requested == "none":
                 requested = "tar.zst"
 
-            fmt = CompressionFormat(requested)
+            archive_result = None
 
             # Derived artifact lives next to the run directory
-            if fmt is CompressionFormat.ZIP:
+            if CompressionFormat(requested) is CompressionFormat.ZIP:
                 out = materialized.run_root.with_suffix(".zip")
-                compressed_path = compress_run_directory(
+                archive_result = compress_run_directory(
                     run_root=materialized.run_root,
                     output_path=out,
                     format=CompressionFormat.ZIP,
-                ).archive_path
-            elif fmt is CompressionFormat.TAR_ZST:
+                )
+                compressed_path = archive_result.archive_path
+            elif CompressionFormat(requested) is CompressionFormat.TAR_ZST:
                 out = materialized.run_root.with_suffix(".tar.zst")
                 try:
-                    compressed_path = compress_run_directory(
+                    archive_result = compress_run_directory(
                         run_root=materialized.run_root,
                         output_path=out,
                         format=CompressionFormat.TAR_ZST,
-                    ).archive_path
+                    )
+                    compressed_path = archive_result.archive_path
                 except RuntimeError:
                     # Optional fallback to zip when tar.zst is unavailable
                     fallback = materialized.run_root.with_suffix(".zip")
-                    compressed_path = compress_run_directory(
+                    archive_result = compress_run_directory(
                         run_root=materialized.run_root,
                         output_path=fallback,
                         format=CompressionFormat.ZIP,
-                    ).archive_path
+                    )
+                    compressed_path = archive_result.archive_path
                     print()
                     print("NOTE: tar.zst unavailable; fell back to zip.")
             else:
                 compressed_path = None
 
-            if compressed_path is not None:
+            if compressed_path is not None and archive_result is not None:
                 rel = os.path.relpath(compressed_path, start=materialized.manifest_path.parent)
                 sha256 = compute_file_sha256_hex(compressed_path)
                 size_bytes = compressed_path.stat().st_size
 
                 archive_meta = BackupRunArchiveV1(
-                    format=str(fmt.value),
+                    format=str(archive_result.format.value),
                     relative_path=str(rel).replace("\\", "/"),
                     size_bytes=int(size_bytes),
                     sha256=str(sha256),
                 )
                 print(f"  Compressed    : {compressed_path}")
 
+        archive_metadata = _resolve_archive_metadata_fields(archive=archive_meta)
+
         updated_manifest = _build_executed_run_manifest(
             base_manifest=materialized.manifest,
             execution_summary=summary,
             archive=archive_meta,
+            archive_format=archive_metadata.archive_format,
+            compression_method=archive_metadata.compression_method,
+            compression_level=archive_metadata.compression_level,
+            archive_writer_version=archive_metadata.archive_writer_version,
+            archive_extension=archive_metadata.archive_extension,
         )
 
         write_run_manifest_atomic(materialized.manifest_path, updated_manifest)
@@ -672,6 +687,7 @@ def _build_run_manifest(
     created_at_utc = clock.now().astimezone(timezone.utc)
     operations_payload = _serialize_manifest_operations_without_destination_paths(plan)
     scan_issues_payload = _serialize_scan_issues_for_manifest(plan)
+    archive_metadata = _resolve_archive_metadata_fields(archive=archive)
 
     base_manifest = BackupRunManifestV2(
         schema_version=BackupRunManifestV2.SCHEMA_VERSION,
@@ -685,6 +701,11 @@ def _build_run_manifest(
         backup_note=backup_note,
         job_id=job_id,
         job_name=job_name,
+        archive_format=archive_metadata.archive_format,
+        compression_method=archive_metadata.compression_method,
+        compression_level=archive_metadata.compression_level,
+        archive_writer_version=archive_metadata.archive_writer_version,
+        archive_extension=archive_metadata.archive_extension,
         operations=list(operations_payload),
         scan_issues=list(scan_issues_payload),
         execution=None,
@@ -704,6 +725,11 @@ def _build_executed_run_manifest(
     execution_summary: BackupExecutionSummary,
     archive: BackupRunArchiveV1 | None,
     include_destination_paths: bool = True,
+    archive_format: str | None = None,
+    compression_method: str | None = None,
+    compression_level: int | None = None,
+    archive_writer_version: str | None = None,
+    archive_extension: str | None = None,
 ) -> BackupRunManifestV2:
     """
     Create a new run manifest including execution results.
@@ -748,10 +774,92 @@ def _build_executed_run_manifest(
         backup_note=base_manifest.backup_note,
         job_id=base_manifest.job_id,
         job_name=base_manifest.job_name,
+        archive_format=archive_format
+        if archive_format is not None
+        else base_manifest.archive_format,
+        compression_method=(
+            compression_method
+            if compression_method is not None
+            else base_manifest.compression_method
+        ),
+        compression_level=(
+            compression_level if compression_level is not None else base_manifest.compression_level
+        ),
+        archive_writer_version=(
+            archive_writer_version
+            if archive_writer_version is not None
+            else base_manifest.archive_writer_version
+        ),
+        archive_extension=(
+            archive_extension if archive_extension is not None else base_manifest.archive_extension
+        ),
         operations=list(base_manifest.operations),
         scan_issues=list(base_manifest.scan_issues),
         execution=execution,
         archive=archive,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ArchiveMetadataFields:
+    """Declared archive metadata persisted on run manifests."""
+
+    archive_format: str | None
+    compression_method: str | None
+    compression_level: int | None
+    archive_writer_version: str | None
+    archive_extension: str | None
+
+
+def _resolve_archive_metadata_fields(
+    *, archive: BackupRunArchiveV1 | None
+) -> _ArchiveMetadataFields:
+    """
+    Resolve declared archive metadata from the actual produced archive artifact.
+
+    Parameters
+    ----------
+    archive:
+        Archive metadata for the produced artifact, if one exists.
+
+    Returns
+    -------
+    _ArchiveMetadataFields
+        Declared archive metadata. Unknown values remain ``None`` instead of
+        being guessed from filenames.
+    """
+    if archive is None:
+        return _ArchiveMetadataFields(
+            archive_format=None,
+            compression_method=None,
+            compression_level=None,
+            archive_writer_version=None,
+            archive_extension=None,
+        )
+
+    archive_format = archive.format
+    if archive_format == "zip":
+        return _ArchiveMetadataFields(
+            archive_format="zip",
+            compression_method="deflate",
+            compression_level=None,
+            archive_writer_version=None,
+            archive_extension=".zip",
+        )
+    if archive_format == "tar.zst":
+        return _ArchiveMetadataFields(
+            archive_format="tar.zst",
+            compression_method="zstd",
+            compression_level=None,
+            archive_writer_version=None,
+            archive_extension=".tar.zst",
+        )
+    return _ArchiveMetadataFields(
+        archive_format=archive_format,
+        compression_method=None,
+        compression_level=None,
+        archive_writer_version=None,
+        archive_extension=None,
     )
 
 

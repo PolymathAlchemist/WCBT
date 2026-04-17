@@ -62,6 +62,11 @@ def materialize_backup_run(
     backup_note: str | None,
     job_id: str | None,
     job_name: str | None,
+    archive_format: str | None = None,
+    compression_method: str | None = None,
+    compression_level: int | None = None,
+    archive_writer_version: str | None = None,
+    archive_extension: str | None = None,
 ) -> MaterializedBackupRun:
     """
     Create the run directory and write plan + manifest artifacts.
@@ -87,6 +92,11 @@ def materialize_backup_run(
             backup_note=backup_note,
             job_id=job_id,
             job_name=job_name,
+            archive_format=archive_format,
+            compression_method=compression_method,
+            compression_level=compression_level,
+            archive_writer_version=archive_writer_version,
+            archive_extension=archive_extension,
             operations=list(operations_payload),
             scan_issues=list(scan_issues_payload),
             execution=None,

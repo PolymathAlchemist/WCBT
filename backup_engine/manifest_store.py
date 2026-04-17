@@ -207,6 +207,11 @@ class BackupRunManifestV2:
     backup_note: str | None = None
     job_id: str | None = None
     job_name: str | None = None
+    archive_format: str | None = None
+    compression_method: str | None = None
+    compression_level: int | None = None
+    archive_writer_version: str | None = None
+    archive_extension: str | None = None
     operations: list[Mapping[str, Any]] = field(default_factory=list)
     scan_issues: list[Mapping[str, Any]] = field(default_factory=list)
     execution: BackupRunExecutionV1 | None = None
@@ -233,6 +238,11 @@ class BackupRunManifestV2:
             payload["job_id"] = self.job_id
         if self.job_name is not None:
             payload["job_name"] = self.job_name
+        payload["archive_format"] = self.archive_format
+        payload["compression_method"] = self.compression_method
+        payload["compression_level"] = self.compression_level
+        payload["archive_writer_version"] = self.archive_writer_version
+        payload["archive_extension"] = self.archive_extension
         if self.execution is not None:
             payload["execution"] = self.execution.to_dict()
         if self.archive is not None:
@@ -314,6 +324,31 @@ class BackupRunManifestV2:
             ),
             job_id=str(payload["job_id"]) if payload.get("job_id") is not None else None,
             job_name=str(payload["job_name"]) if payload.get("job_name") is not None else None,
+            archive_format=(
+                str(payload["archive_format"])
+                if payload.get("archive_format") is not None
+                else None
+            ),
+            compression_method=(
+                str(payload["compression_method"])
+                if payload.get("compression_method") is not None
+                else None
+            ),
+            compression_level=(
+                int(payload["compression_level"])
+                if payload.get("compression_level") is not None
+                else None
+            ),
+            archive_writer_version=(
+                str(payload["archive_writer_version"])
+                if payload.get("archive_writer_version") is not None
+                else None
+            ),
+            archive_extension=(
+                str(payload["archive_extension"])
+                if payload.get("archive_extension") is not None
+                else None
+            ),
             operations=list(payload.get("operations", [])),
             scan_issues=list(payload.get("scan_issues", [])),
             execution=execution,

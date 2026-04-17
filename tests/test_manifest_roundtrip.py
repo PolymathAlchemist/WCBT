@@ -76,6 +76,11 @@ def test_backup_run_manifest_round_trip_preserves_backup_origin(tmp_path: Path) 
         source_root="C:/source",
         backup_origin="pre_restore",
         backup_note="Pre-restore safety backup executed by restore workflow",
+        archive_format="zip",
+        compression_method="deflate",
+        compression_level=None,
+        archive_writer_version=None,
+        archive_extension=".zip",
         operations=[],
         scan_issues=[],
     )
@@ -85,6 +90,11 @@ def test_backup_run_manifest_round_trip_preserves_backup_origin(tmp_path: Path) 
 
     assert loaded.backup_origin == "pre_restore"
     assert loaded.backup_note == "Pre-restore safety backup executed by restore workflow"
+    assert loaded.archive_format == "zip"
+    assert loaded.compression_method == "deflate"
+    assert loaded.compression_level is None
+    assert loaded.archive_writer_version is None
+    assert loaded.archive_extension == ".zip"
 
 
 def test_backup_run_manifest_round_trip_allows_missing_backup_origin(tmp_path: Path) -> None:
@@ -107,5 +117,37 @@ def test_backup_run_manifest_round_trip_allows_missing_backup_origin(tmp_path: P
 
     assert "backup_origin" not in payload
     assert "backup_note" not in payload
+    assert payload["archive_format"] is None
+    assert payload["compression_method"] is None
+    assert payload["compression_level"] is None
+    assert payload["archive_writer_version"] is None
+    assert payload["archive_extension"] is None
     assert loaded.backup_origin is None
     assert loaded.backup_note is None
+    assert loaded.archive_format is None
+    assert loaded.compression_method is None
+    assert loaded.compression_level is None
+    assert loaded.archive_writer_version is None
+    assert loaded.archive_extension is None
+
+
+def test_backup_run_manifest_from_dict_allows_missing_archive_metadata_fields() -> None:
+    loaded = BackupRunManifestV2.from_dict(
+        {
+            "schema_version": BackupRunManifestV2.SCHEMA_VERSION,
+            "run_id": "20260101_000000Z",
+            "created_at_utc": "2026-01-01T00:00:00Z",
+            "archive_root": "C:/archive",
+            "plan_text_path": "C:/archive/plan.txt",
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "operations": [],
+            "scan_issues": [],
+        }
+    )
+
+    assert loaded.archive_format is None
+    assert loaded.compression_method is None
+    assert loaded.compression_level is None
+    assert loaded.archive_writer_version is None
+    assert loaded.archive_extension is None

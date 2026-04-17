@@ -204,6 +204,11 @@ def test_end_to_end_backup_compress_zip_then_restore_from_archive(tmp_path: Path
         "Expected run manifest to include archive metadata after compression."
     )
     assert Path(payload["archive_root"]) == source_root.parent / "source.OZ0"
+    assert payload["archive_format"] == "zip"
+    assert payload["compression_method"] == "deflate"
+    assert payload["compression_level"] is None
+    assert payload["archive_writer_version"] is None
+    assert payload["archive_extension"] == ".zip"
     assert payload["archive"]["relative_path"] == archive_path.name
     assert all("destination_path" not in operation for operation in payload["operations"])
     execution = payload.get("execution", {})
@@ -281,6 +286,11 @@ def test_end_to_end_backup_compress_derives_oz0_root_from_source_parent(tmp_path
 
     payload = json.loads(expected_manifest.read_text(encoding="utf-8"))
     assert Path(payload["archive_root"]) == expected_oz0_root
+    assert payload["archive_format"] == "zip"
+    assert payload["compression_method"] == "deflate"
+    assert payload["compression_level"] is None
+    assert payload["archive_writer_version"] is None
+    assert payload["archive_extension"] == ".zip"
     assert payload["archive"]["relative_path"] == expected_archive.name
 
 
@@ -407,3 +417,8 @@ def test_standard_backup_manifest_defaults_backup_origin_to_normal(tmp_path: Pat
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert payload["backup_origin"] == "normal"
+    assert payload["archive_format"] is None
+    assert payload["compression_method"] is None
+    assert payload["compression_level"] is None
+    assert payload["archive_writer_version"] is None
+    assert payload["archive_extension"] is None
