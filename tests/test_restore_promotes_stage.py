@@ -54,6 +54,8 @@ def test_restore_non_dry_run_promotes_stage_to_destination(tmp_path: Path) -> No
         clock=FixedClock(datetime(2000, 1, 1, tzinfo=timezone.utc)),
     )
 
+    transient_stage_root = destination_root.with_name(f"{destination_root.name}.wcbt_stage")
+
     # Destination should now be the promoted stage and contain restore artifacts.
     restore_root = destination_root / ".wcbt_restore"
     assert restore_root.exists()
@@ -65,8 +67,11 @@ def test_restore_non_dry_run_promotes_stage_to_destination(tmp_path: Path) -> No
     assert (artifacts_root / "restore_candidates.jsonl").is_file()
     assert (artifacts_root / "execution_journal.jsonl").is_file()
 
-    # The old destination should have been preserved under the derived previous root name.
+    # The old destination snapshot should be removed after the compressed pre-restore
+    # safety backup succeeds.
     run_id = artifacts_root.name
     previous_root = tmp_path / f".wcbt_restore_previous_{destination_root.name}_{run_id}"
-    assert previous_root.exists()
-    assert (previous_root / "preexisting.txt").is_file()
+    assert not previous_root.exists()
+    oz0_root = destination_root.parent / f"{destination_root.name}.OZ0"
+    assert any(oz0_root.glob("*.OZ0.zip"))
+    assert not transient_stage_root.exists()

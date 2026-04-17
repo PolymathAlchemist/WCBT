@@ -90,6 +90,16 @@ class SettingsTab(QWidget):
         row4.addWidget(self.compression_combo, 1)
         box_layout.addLayout(row4)
 
+        self.pre_restore_compression_combo = QComboBox()
+        self.pre_restore_compression_combo.addItem("None", "none")
+        self.pre_restore_compression_combo.addItem("zip (default)", "zip")
+        self.pre_restore_compression_combo.addItem("tar.zst", "tar.zst")
+
+        row5 = QHBoxLayout()
+        row5.addWidget(QLabel("Pre-restore backup compression:"))
+        row5.addWidget(self.pre_restore_compression_combo, 1)
+        box_layout.addLayout(row5)
+
         # Save button
         btn_save = QPushButton("Save Settings")
         btn_save.clicked.connect(self._save)
@@ -107,6 +117,9 @@ class SettingsTab(QWidget):
 
         self._select_combo_by_data(self.run_mode_combo, s.default_run_mode)
         self._select_combo_by_data(self.compression_combo, s.default_compression)
+        self._select_combo_by_data(
+            self.pre_restore_compression_combo, s.pre_restore_backup_compression
+        )
 
     @staticmethod
     def _select_combo_by_data(combo: QComboBox, value: str) -> None:
@@ -140,6 +153,7 @@ class SettingsTab(QWidget):
             restore_mode=current_settings.restore_mode,
             restore_verify=current_settings.restore_verify,
             restore_dry_run=current_settings.restore_dry_run,
+            pre_restore_backup_compression=str(self.pre_restore_compression_combo.currentData()),
         )
 
         try:

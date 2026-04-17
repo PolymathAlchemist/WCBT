@@ -59,6 +59,7 @@ def materialize_backup_run(
     source_root: Path,
     clock: Clock,
     backup_origin: str | None,
+    backup_note: str | None,
     job_id: str | None,
     job_name: str | None,
 ) -> MaterializedBackupRun:
@@ -83,6 +84,7 @@ def materialize_backup_run(
             profile_name=profile_name,
             source_root=str(source_root),
             backup_origin=backup_origin,
+            backup_note=backup_note,
             job_id=job_id,
             job_name=job_name,
             operations=list(operations_payload),

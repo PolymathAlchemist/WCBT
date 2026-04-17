@@ -109,3 +109,26 @@ def test_list_backup_runs_discovers_oz0_named_manifests(tmp_path: Path) -> None:
 
     assert len(runs) == 1
     assert runs[0].manifest_path == manifest_path
+
+
+def test_list_backup_runs_preserves_backup_note_when_present(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    manifest_path = archive_root / "run-note" / "manifest.json"
+
+    _write_manifest(
+        manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-note",
+            "created_at_utc": "2026-01-03T00:00:00+00:00",
+            "archive_root": str(archive_root),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "backup_note": "Scheduled backup executed by scheduler",
+        },
+    )
+
+    runs = list_backup_runs(archive_root, limit=10)
+
+    assert len(runs) == 1
+    assert runs[0].backup_note == "Scheduled backup executed by scheduler"

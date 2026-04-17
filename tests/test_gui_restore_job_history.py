@@ -13,7 +13,7 @@ from backup_engine.job_binding import JobBinding
 from backup_engine.profile_store.api import JobSummary
 from backup_engine.profile_store.sqlite_store import open_profile_store
 from gui.settings_store import GuiSettings
-from gui.tabs.restore_tab import RestoreTab
+from gui.tabs.restore_tab import RestoreTab, RestoreWorker
 
 
 def _app() -> QApplication:
@@ -352,7 +352,7 @@ def test_restore_history_auto_discovers_existing_oz0_manifests_from_saved_job_bi
     try:
         tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
 
-        assert tab.archive_root.text() == ""
+        assert tab.archive_root.text() == str(oz0_root)
         assert tab.history.count() == 1
         assert "20260108_000000Z" in tab.history.item(0).text()
         assert Path(str(tab.history.item(0).data(Qt.ItemDataRole.UserRole))) == manifest_path
@@ -418,6 +418,95 @@ def test_restore_history_falls_back_to_job_root_when_persisted_archive_root_is_s
         assert tab.history.count() == 1
         assert "20260108_000000Z" in tab.history.item(0).text()
         assert Path(str(tab.history.item(0).data(Qt.ItemDataRole.UserRole))) == manifest_path
+    finally:
+        tab.shutdown()
+
+
+def test_restore_history_displays_authoritative_root_instead_of_stale_legacy_root(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    data_root = tmp_path / "persisted-data-root"
+    source_root = tmp_path / "testing"
+    source_root.mkdir()
+
+    store = open_profile_store(profile_name="default", data_root=data_root)
+    job_id = store.create_job("Minecraft")
+    binding = store.load_job_binding(job_id)
+    store.save_job_binding(
+        JobBinding(
+            job_id=binding.job_id,
+            job_name=binding.job_name,
+            template_id=binding.template_id,
+            source_root=str(source_root),
+        )
+    )
+
+    settings = GuiSettings(
+        data_root=data_root,
+        archives_root=None,
+        default_compression="none",
+        default_run_mode="plan",
+    )
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr("gui.tabs.restore_tab.load_gui_settings", lambda *, data_root: settings)
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
+        tab._on_restore_defaults_loaded(  # noqa: SLF001
+            job_id,
+            {
+                "archive_root": str(source_root.parent / "OZ0"),
+                "restore_dest_root": str(tmp_path / "restore-destination"),
+            },
+        )
+
+        assert tab.archive_root_label.text() == "Artifacts root:"
+        assert tab.archive_root.text() == str(source_root.parent / "testing.OZ0")
+    finally:
+        tab.shutdown()
+
+
+def test_restore_history_marks_field_as_manual_override_when_text_differs_from_authoritative_root(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    data_root = tmp_path / "persisted-data-root"
+    source_root = tmp_path / "testing"
+    source_root.mkdir()
+
+    store = open_profile_store(profile_name="default", data_root=data_root)
+    job_id = store.create_job("Minecraft")
+    binding = store.load_job_binding(job_id)
+    store.save_job_binding(
+        JobBinding(
+            job_id=binding.job_id,
+            job_name=binding.job_name,
+            template_id=binding.template_id,
+            source_root=str(source_root),
+        )
+    )
+
+    settings = GuiSettings(
+        data_root=data_root,
+        archives_root=None,
+        default_compression="none",
+        default_run_mode="plan",
+    )
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr("gui.tabs.restore_tab.load_gui_settings", lambda *, data_root: settings)
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
+        tab.archive_root.setText(str(tmp_path / "manual-override"))
+
+        assert tab.archive_root_label.text() == "History root override:"
     finally:
         tab.shutdown()
 
@@ -539,7 +628,7 @@ def test_restore_history_auto_discovers_legacy_oz0_manifests_from_saved_job_bind
     try:
         tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
 
-        assert tab.archive_root.text() == ""
+        assert tab.archive_root.text() == str(source_root.parent / "world.OZ0")
         assert tab.history.count() == 1
         assert "20260108_000000Z" in tab.history.item(0).text()
         assert Path(str(tab.history.item(0).data(Qt.ItemDataRole.UserRole))) == manifest_path
@@ -636,6 +725,10 @@ def test_restore_history_details_show_pre_restore_backup_origin(
             "profile_name": "default",
             "source_root": "C:/source",
             "backup_origin": "pre_restore",
+            "backup_note": (
+                "Pre-restore safety backup created before restoring run "
+                "run-pre-restore over active files at C:/restore-destination"
+            ),
             "operations": [],
             "scan_issues": [],
         },
@@ -651,6 +744,10 @@ def test_restore_history_details_show_pre_restore_backup_origin(
 
         assert "[Pre-restore safeguard backup]" in history_text
         assert "backup_origin: Pre-restore safeguard backup" in details_text
+        assert (
+            "backup_note: Pre-restore safety backup created before restoring run "
+            "run-pre-restore over active files at C:/restore-destination"
+        ) in details_text
     finally:
         tab.shutdown()
 
@@ -756,6 +853,58 @@ def test_restore_summary_shows_backup_origin_labels(
         tab.shutdown()
 
 
+def test_restore_history_filter_matches_backup_note_text(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+
+    archive_root = tmp_path / "archive"
+    _write_manifest(
+        archive_root / "run-scheduled" / "manifest.json",
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-scheduled",
+            "created_at_utc": "2026-01-07T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-scheduled" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "backup_origin": "scheduled",
+            "backup_note": "Scheduled backup executed by scheduler",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+    _write_manifest(
+        archive_root / "run-manual" / "manifest.json",
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-manual",
+            "created_at_utc": "2026-01-06T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-manual" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([])  # noqa: SLF001
+        tab.archive_root.setText(str(archive_root))
+        tab.filter_edit.setText("scheduler")
+
+        assert tab.history.count() == 1
+        assert "run-scheduled" in tab.history.item(0).text()
+        assert "backup_note: Scheduled backup executed by scheduler" in tab.details.toPlainText()
+    finally:
+        tab.shutdown()
+
+
 def test_restore_tab_keeps_single_copy_restore_summary_button_after_repeated_selections(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -849,6 +998,86 @@ def test_restore_tab_open_artifacts_root_uses_job_binding_without_session_restor
         tab.shutdown()
 
 
+def test_restore_tab_open_artifacts_root_prefers_job_binding_over_manual_legacy_archive_root(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    data_root = tmp_path / "persisted-data-root"
+    source_root = tmp_path / "world"
+    source_root.mkdir()
+
+    store = open_profile_store(profile_name="default", data_root=data_root)
+    job_id = store.create_job("Minecraft")
+    binding = store.load_job_binding(job_id)
+    store.save_job_binding(
+        JobBinding(
+            job_id=binding.job_id,
+            job_name=binding.job_name,
+            template_id=binding.template_id,
+            source_root=str(source_root),
+        )
+    )
+
+    settings = GuiSettings(
+        data_root=data_root,
+        archives_root=None,
+        default_compression="none",
+        default_run_mode="plan",
+    )
+
+    opened_urls: list[QUrl] = []
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr("gui.tabs.restore_tab.load_gui_settings", lambda *, data_root: settings)
+    monkeypatch.setattr(QDesktopServices, "openUrl", opened_urls.append)
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
+        legacy_archive_root = source_root.parent / "OZ0"
+        authoritative_root = source_root.parent / "world.OZ0"
+
+        tab.archive_root.setText(str(legacy_archive_root))
+
+        assert not authoritative_root.exists()
+        tab._open_artifacts_root()  # noqa: SLF001
+
+        assert authoritative_root.is_dir()
+        assert not legacy_archive_root.exists()
+        assert len(opened_urls) == 1
+        assert Path(opened_urls[0].toLocalFile()) == authoritative_root
+    finally:
+        tab.shutdown()
+
+
+def test_restore_worker_passes_pre_restore_backup_compression_policy(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    recorded_kwargs: dict[str, object] = {}
+
+    def _run_restore(**kwargs: object) -> object:
+        recorded_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("gui.tabs.restore_tab.run_restore", _run_restore)
+
+    worker = RestoreWorker(data_root=tmp_path / "data_root")
+    worker.configure(
+        manifest_path=tmp_path / "manifest.json",
+        destination_root=tmp_path / "restore-destination",
+        mode="overwrite",
+        verify="size",
+        dry_run=False,
+        pre_restore_backup_compression="tar.zst",
+    )
+    worker.run()
+
+    assert recorded_kwargs["pre_restore_backup_compression"] == "tar.zst"
+
+
 def test_restore_tab_housekeeping_removes_safe_transient_restore_residue(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -869,11 +1098,13 @@ def test_restore_tab_housekeeping_removes_safe_transient_restore_residue(
     destination_root.mkdir()
     stage_root = destination_root.with_name(f"{destination_root.name}.wcbt_stage")
     extract_root = destination_root.with_name(f"{destination_root.name}.wcbt_restore_extract")
+    previous_root = tmp_path / ".wcbt_restore_previous_restore-destination_20260109_000000Z"
     artifact_root = tmp_path / "keep-me.OZ0"
     manifest_path = artifact_root / "run" / "manifest.json"
 
     (stage_root / "123" / "stage_root").mkdir(parents=True)
     (extract_root / "123").mkdir(parents=True)
+    previous_root.mkdir(parents=True)
     _write_manifest(
         manifest_path,
         {
@@ -909,7 +1140,8 @@ def test_restore_tab_housekeeping_removes_safe_transient_restore_residue(
 
         assert not stage_root.exists()
         assert not extract_root.exists()
+        assert not previous_root.exists()
         assert manifest_path.is_file()
-        assert any("Removed 2 transient restore folder" in message for message in info_messages)
+        assert any("Removed 3 restore residue folder" in message for message in info_messages)
     finally:
         tab.shutdown()

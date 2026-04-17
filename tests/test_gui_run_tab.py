@@ -382,3 +382,95 @@ def test_run_tab_backup_now_plan_only_keeps_oz0_root_out_of_profile_archives(
         assert tab._last_result.plan_text_path.parent == expected_oz0_root  # noqa: SLF001
     finally:
         tab.shutdown()
+
+
+def test_run_tab_open_artifacts_uses_job_binding_without_current_session_backup(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    data_root = tmp_path / "data_root"
+    source_root = tmp_path / "testing"
+    source_root.mkdir()
+
+    settings = GuiSettings(
+        data_root=data_root,
+        archives_root=None,
+        default_compression="none",
+        default_run_mode="plan",
+    )
+
+    store = open_profile_store(profile_name="default", data_root=data_root)
+    job_id = store.create_job("Minecraft")
+    binding = store.load_job_binding(job_id)
+    store.save_job_binding(
+        JobBinding(
+            job_id=binding.job_id,
+            job_name="Minecraft",
+            template_id=binding.template_id,
+            source_root=str(source_root),
+        )
+    )
+
+    opened_urls: list[QUrl] = []
+
+    monkeypatch.setattr("gui.tabs.run_tab.load_gui_settings", lambda *, data_root: settings)
+    monkeypatch.setattr("gui.tabs.run_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr(QDesktopServices, "openUrl", opened_urls.append)
+
+    tab = RunTab()
+    try:
+        tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
+        expected_oz0_root = source_root.parent / "testing.OZ0"
+
+        assert tab._last_result is None  # noqa: SLF001
+        assert not expected_oz0_root.exists()
+
+        tab._open_artifacts()  # noqa: SLF001
+
+        assert expected_oz0_root.is_dir()
+        assert len(opened_urls) == 1
+        assert Path(opened_urls[0].toLocalFile()) == expected_oz0_root
+    finally:
+        tab.shutdown()
+
+
+def test_backup_worker_passes_manual_backup_note_to_run_backup(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    recorded_kwargs: dict[str, object] = {}
+
+    def _run_backup(**kwargs: object) -> BackupRunResult:
+        recorded_kwargs.update(kwargs)
+        return BackupRunResult(
+            run_id="run-id",
+            profile_name="default",
+            source_root=tmp_path / "world",
+            archive_root=tmp_path / "world.OZ0",
+            dry_run=True,
+            report_text="ok",
+            plan_text_path=None,
+            manifest_path=None,
+            executed=False,
+            backup_note=str(kwargs.get("backup_note")) if kwargs.get("backup_note") else None,
+        )
+
+    monkeypatch.setattr("gui.tabs.run_tab.run_backup", _run_backup)
+    monkeypatch.setattr(BackupWorker, "_resolve_plan_compression", lambda self, job_id: "none")
+
+    worker = BackupWorker(profile_name="default", data_root=tmp_path / "data_root")
+    (tmp_path / "world").mkdir()
+    worker.configure(
+        "job-1",
+        "Minecraft",
+        tmp_path / "world",
+        "plan",
+        "Before major mod update",
+        data_root=tmp_path / "data_root",
+        default_compression="none",
+    )
+    worker.run()
+
+    assert recorded_kwargs["backup_note"] == "Before major mod update"

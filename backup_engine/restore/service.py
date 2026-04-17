@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,118 @@ def _build_extract_root(destination_root: Path, stamp: str) -> Path:
     Build a temporary extraction root outside the destination tree.
     """
     return destination_root.with_name(f"{destination_root.name}.wcbt_restore_extract") / stamp
+
+
+def _build_stage_root(destination_root: Path, run_id: str) -> Path:
+    """
+    Build the staged restore root for a restore run.
+
+    Parameters
+    ----------
+    destination_root:
+        Final restore destination directory.
+    run_id:
+        Restore run identifier.
+
+    Returns
+    -------
+    pathlib.Path
+        Directory used to stage restore content before promotion.
+    """
+    return destination_root.with_name(f"{destination_root.name}.wcbt_stage") / run_id / "stage_root"
+
+
+def _remove_empty_restore_parent(path: Path) -> None:
+    """
+    Remove a restore transient parent directory when it is empty.
+
+    Parameters
+    ----------
+    path:
+        Directory that should be removed only if it exists and is empty.
+    """
+    try:
+        path.rmdir()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def _cleanup_restore_transient_directories(
+    *,
+    extracted_root: Path | None,
+    stage_root: Path,
+) -> None:
+    """
+    Best-effort cleanup for restore transient working directories after success.
+
+    Parameters
+    ----------
+    extracted_root:
+        Archive extraction root created for this restore run, if any.
+    stage_root:
+        Stage root used for this restore run.
+
+    Notes
+    -----
+    Cleanup is intentionally best-effort and limited to known transient restore
+    working folders. Safety snapshots such as ``.wcbt_restore_previous_*`` are
+    not touched here.
+    """
+    if extracted_root is not None:
+        shutil.rmtree(extracted_root, ignore_errors=True)
+        _remove_empty_restore_parent(extracted_root.parent)
+
+    stage_run_root = stage_root.parent
+    shutil.rmtree(stage_run_root, ignore_errors=True)
+    _remove_empty_restore_parent(stage_run_root.parent)
+
+
+def _normalize_pre_restore_backup_compression_policy(compression_policy: str) -> str:
+    """
+    Normalize the pre-restore backup compression policy.
+
+    Parameters
+    ----------
+    compression_policy:
+        Requested compression policy string.
+
+    Returns
+    -------
+    str
+        Supported compression policy. Invalid values fall back to ``"zip"``.
+    """
+    return compression_policy if compression_policy in {"zip", "tar.zst", "none"} else "zip"
+
+
+def _cleanup_promoted_previous_root(
+    *,
+    previous_root: Path | None,
+    pre_restore_backup_compression: str,
+) -> None:
+    """
+    Remove the promoted previous-root snapshot after successful archived safety backup.
+
+    Parameters
+    ----------
+    previous_root:
+        Preserve snapshot created by atomic promotion, if any.
+    pre_restore_backup_compression:
+        Effective compression policy used for the pre-restore safety backup.
+
+    Notes
+    -----
+    Cleanup is intentionally limited to restores that already completed a
+    compressed pre-restore safety backup and then successfully promoted. If
+    compression was disabled, or promotion did not preserve a previous root,
+    the snapshot is left in place.
+    """
+    if previous_root is None:
+        return
+    if pre_restore_backup_compression == "none":
+        return
+    shutil.rmtree(previous_root, ignore_errors=True)
 
 
 def _resolve_manifest_input(
@@ -360,6 +473,7 @@ def _run_pre_restore_backup(
     data_root: Path | None,
     clock: Clock,
     journal: RestoreExecutionJournal,
+    compression_policy: str,
 ) -> BackupRunResult | None:
     """
     Execute a pre-restore backup of the current live destination when applicable.
@@ -376,6 +490,8 @@ def _run_pre_restore_backup(
         Clock shared with the restore run for deterministic testing.
     journal:
         Restore execution journal used for audit events.
+    compression_policy:
+        Preferred compression policy for the pre-restore safety backup.
 
     Returns
     -------
@@ -400,12 +516,14 @@ def _run_pre_restore_backup(
     manifest_job_id = run_payload.get("job_id")
     job_id = str(manifest_job_id) if isinstance(manifest_job_id, str) and manifest_job_id else None
 
-    resolved_job_id, resolved_job_name, compression = _resolve_pre_restore_backup_job(
+    resolved_job_id, resolved_job_name, live_job_compression = _resolve_pre_restore_backup_job(
         profile_name=profile_name,
         data_root=data_root,
         destination_root=destination_root,
         manifest_job_id=job_id,
     )
+    compression = _normalize_pre_restore_backup_compression_policy(compression_policy)
+    should_compress = compression != "none"
 
     journal.append(
         "pre_restore_backup_started",
@@ -415,7 +533,13 @@ def _run_pre_restore_backup(
             "job_id": resolved_job_id,
             "job_name": resolved_job_name,
             "compression": compression,
+            "live_job_compression": live_job_compression,
         },
+    )
+
+    backup_note = _build_pre_restore_backup_note(
+        run_payload=run_payload,
+        destination_root=destination_root,
     )
 
     result = run_backup(
@@ -424,7 +548,9 @@ def _run_pre_restore_backup(
         dry_run=False,
         data_root=data_root,
         backup_origin="pre_restore",
+        backup_note=backup_note,
         execute=True,
+        compress=should_compress,
         compression=compression,
         job_id=resolved_job_id,
         job_name=resolved_job_name if resolved_job_name is not None else destination_root.name,
@@ -445,6 +571,50 @@ def _run_pre_restore_backup(
     return result
 
 
+def _build_pre_restore_backup_note(
+    *,
+    run_payload: Mapping[str, Any],
+    destination_root: Path,
+) -> str:
+    """
+    Build a contextual note for a pre-restore safety backup.
+
+    Parameters
+    ----------
+    run_payload : Mapping[str, Any]
+        Parsed manifest for the incoming restore input.
+    destination_root : Path
+        Live destination that is about to be overwritten.
+
+    Returns
+    -------
+    str
+        Human-readable note describing what restore input triggered the safety
+        backup and which live destination it protects.
+    """
+    archive_payload = run_payload.get("archive")
+    if isinstance(archive_payload, Mapping):
+        relative_path = archive_payload.get("relative_path")
+        if isinstance(relative_path, str) and relative_path.strip():
+            archive_name = Path(relative_path).name
+            return (
+                "Pre-restore safety backup created before restoring archive "
+                f"{archive_name} over active files at {destination_root}"
+            )
+
+    run_id = run_payload.get("run_id")
+    if isinstance(run_id, str) and run_id.strip():
+        return (
+            "Pre-restore safety backup created before restoring run "
+            f"{run_id} over active files at {destination_root}"
+        )
+
+    return (
+        "Pre-restore safety backup created before restoring over active files at "
+        f"{destination_root}"
+    )
+
+
 def run_restore(
     *,
     manifest_path: Path,
@@ -454,6 +624,7 @@ def run_restore(
     dry_run: bool,
     data_root: Path | None = None,
     clock: Clock | None = None,
+    pre_restore_backup_compression: str = "zip",
 ) -> RestoreRunResult:
     """
     Plan, stage, optionally verify, and optionally promote a restore.
@@ -483,6 +654,10 @@ def run_restore(
         Reserved for future profile-oriented restore flows. Currently unused.
     clock:
         Injectable clock used for deterministic journaling.
+    pre_restore_backup_compression:
+        Compression policy for the mandatory pre-restore safety backup on
+        non-dry-run restores. Supported values are ``"zip"``, ``"tar.zst"``,
+        and ``"none"``.
 
     Returns
     -------
@@ -518,8 +693,11 @@ def run_restore(
     _ = data_root
 
     clock_to_use = clock if clock is not None else SystemClock()
+    effective_pre_restore_backup_compression = _normalize_pre_restore_backup_compression_policy(
+        pre_restore_backup_compression
+    )
 
-    resolved_manifest_path, _extracted_root = _resolve_manifest_input(
+    resolved_manifest_path, extracted_root = _resolve_manifest_input(
         manifest_input=manifest_path,
         destination_root=destination_root,
         clock=clock_to_use,
@@ -544,9 +722,7 @@ def run_restore(
 
     run_id = str(plan.run_id)
 
-    stage_root = (
-        destination_root.with_name(f"{destination_root.name}.wcbt_stage") / run_id / "stage_root"
-    )
+    stage_root = _build_stage_root(destination_root, run_id)
 
     if dry_run:
         artifacts_root = _restore_artifacts_root(plan.destination_root, run_id)
@@ -664,11 +840,7 @@ def run_restore(
         },
     )
 
-    stage_root = (
-        destination_root.with_name(f"{destination_root.name}.wcbt_stage")
-        / str(plan.run_id)
-        / "stage_root"
-    )
+    stage_root = _build_stage_root(destination_root, str(plan.run_id))
 
     try:
         if not dry_run:
@@ -678,6 +850,7 @@ def run_restore(
                 data_root=data_root,
                 clock=clock_to_use,
                 journal=journal,
+                compression_policy=effective_pre_restore_backup_compression,
             )
 
         stage_result = build_restore_stage(
@@ -771,12 +944,20 @@ def run_restore(
             },
         )
 
-        promote_stage_to_destination(
+        promotion_result = promote_stage_to_destination(
             stage_root=stage_root,
             destination_root=destination_root,
             run_id=str(plan.run_id),
             dry_run=False,
             journal=None,
+        )
+        _cleanup_promoted_previous_root(
+            previous_root=promotion_result.previous_root,
+            pre_restore_backup_compression=effective_pre_restore_backup_compression,
+        )
+        _cleanup_restore_transient_directories(
+            extracted_root=extracted_root,
+            stage_root=stage_root,
         )
 
         final_artifacts_root = _restore_artifacts_root(destination_root, run_id)

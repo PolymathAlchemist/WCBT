@@ -93,6 +93,7 @@ class BackupRunResult:
     plan_text_path: Path | None
     manifest_path: Path | None
     executed: bool
+    backup_note: str | None = None
 
 
 _INVALID_FILENAME_CHARACTERS = re.compile(r'[\\/:*?"<>|]+')
@@ -105,6 +106,7 @@ def run_backup(
     dry_run: bool,
     data_root: Path | None,
     backup_origin: str = "normal",
+    backup_note: str | None = None,
     job_id: str | None = None,
     job_name: str | None = None,
     excluded_directory_names: Iterable[str] | None = None,
@@ -190,6 +192,10 @@ def run_backup(
         )
 
     run_clock = clock or SystemClock()
+    resolved_backup_note = _resolve_backup_note(
+        backup_origin=backup_origin,
+        backup_note=backup_note,
+    )
 
     paths = resolve_profile_paths(profile_name, data_root=data_root)
     source_root = validate_source_path(source)
@@ -274,6 +280,7 @@ def run_backup(
             plan_text_path=plan_text_path,
             manifest_path=None,
             executed=False,
+            backup_note=resolved_backup_note,
         )
 
     lock_path = build_profile_lock_path(work_root=paths.work_root)
@@ -302,6 +309,7 @@ def run_backup(
                 job_id=job_id,
                 job_name=job_name,
                 clock=run_clock,
+                backup_note=resolved_backup_note,
             )
 
             return BackupRunResult(
@@ -314,6 +322,7 @@ def run_backup(
                 plan_text_path=None,
                 manifest_path=manifest_path,
                 executed=True,
+                backup_note=resolved_backup_note,
             )
 
         materialized = materialize_backup_run(
@@ -325,6 +334,7 @@ def run_backup(
             source_root=source_root,
             clock=run_clock,
             backup_origin=backup_origin,
+            backup_note=resolved_backup_note,
             job_id=job_id,
             job_name=job_name,
         )
@@ -346,6 +356,7 @@ def run_backup(
                 plan_text_path=materialized.plan_text_path,
                 manifest_path=materialized.manifest_path,
                 executed=False,
+                backup_note=resolved_backup_note,
             )
 
         summary = execute_copy_plan(
@@ -440,6 +451,7 @@ def run_backup(
             plan_text_path=materialized.plan_text_path,
             manifest_path=materialized.manifest_path,
             executed=True,
+            backup_note=resolved_backup_note,
         )
 
 
@@ -492,6 +504,7 @@ def _run_compressed_backup(
     profile_name: str,
     source_root: Path,
     backup_origin: str,
+    backup_note: str | None,
     job_id: str | None,
     job_name: str | None,
     clock: Clock,
@@ -565,6 +578,7 @@ def _run_compressed_backup(
         archive_root=oz0_root,
         manifest_output_path=manifest_output_path,
         backup_origin=backup_origin,
+        backup_note=backup_note,
         job_id=job_id,
         job_name=job_name,
         clock=clock,
@@ -645,6 +659,7 @@ def _build_run_manifest(
     archive_root: Path,
     manifest_output_path: Path,
     backup_origin: str,
+    backup_note: str | None,
     job_id: str | None,
     job_name: str | None,
     clock: Clock,
@@ -667,6 +682,7 @@ def _build_run_manifest(
         profile_name=profile_name,
         source_root=str(source_root),
         backup_origin=backup_origin,
+        backup_note=backup_note,
         job_id=job_id,
         job_name=job_name,
         operations=list(operations_payload),
@@ -729,6 +745,7 @@ def _build_executed_run_manifest(
         profile_name=base_manifest.profile_name,
         source_root=base_manifest.source_root,
         backup_origin=base_manifest.backup_origin,
+        backup_note=base_manifest.backup_note,
         job_id=base_manifest.job_id,
         job_name=base_manifest.job_name,
         operations=list(base_manifest.operations),
@@ -755,6 +772,34 @@ def _build_scan_rules(
         excluded_directory_names=base_directories.union(extra_directories),
         excluded_file_names=base_files.union(extra_files),
     )
+
+
+def _resolve_backup_note(*, backup_origin: str, backup_note: str | None) -> str | None:
+    """
+    Resolve the persisted human-readable note for a backup run.
+
+    Parameters
+    ----------
+    backup_origin : str
+        Origin classification for the backup.
+    backup_note : str | None
+        Caller-supplied note, usually user-entered for manual runs.
+
+    Returns
+    -------
+    str | None
+        Persisted note text, or ``None`` when no note should be written.
+    """
+    if backup_note is not None:
+        normalized_note = " ".join(str(backup_note).split()).strip()
+        if normalized_note:
+            return normalized_note
+
+    auto_notes = {
+        "scheduled": "Scheduled backup executed by scheduler",
+        "pre_restore": "Pre-restore safety backup executed by restore workflow",
+    }
+    return auto_notes.get(backup_origin)
 
 
 def _format_archive_id(clock: Clock) -> str:

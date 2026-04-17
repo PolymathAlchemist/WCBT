@@ -75,6 +75,7 @@ def test_backup_run_manifest_round_trip_preserves_backup_origin(tmp_path: Path) 
         profile_name="default",
         source_root="C:/source",
         backup_origin="pre_restore",
+        backup_note="Pre-restore safety backup executed by restore workflow",
         operations=[],
         scan_issues=[],
     )
@@ -83,6 +84,7 @@ def test_backup_run_manifest_round_trip_preserves_backup_origin(tmp_path: Path) 
     loaded = BackupRunManifestV2.from_dict(read_manifest_json(manifest_path))
 
     assert loaded.backup_origin == "pre_restore"
+    assert loaded.backup_note == "Pre-restore safety backup executed by restore workflow"
 
 
 def test_backup_run_manifest_round_trip_allows_missing_backup_origin(tmp_path: Path) -> None:
@@ -104,4 +106,6 @@ def test_backup_run_manifest_round_trip_allows_missing_backup_origin(tmp_path: P
     loaded = BackupRunManifestV2.from_dict(payload)
 
     assert "backup_origin" not in payload
+    assert "backup_note" not in payload
     assert loaded.backup_origin is None
+    assert loaded.backup_note is None

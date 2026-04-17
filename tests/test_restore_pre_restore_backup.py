@@ -13,7 +13,7 @@ from backup_engine.job_binding import JobBinding
 from backup_engine.profile_store.sqlite_store import open_profile_store
 from backup_engine.restore.errors import RestoreManifestError
 from backup_engine.restore.journal import Clock
-from backup_engine.restore.service import run_restore
+from backup_engine.restore.service import _build_pre_restore_backup_note, run_restore
 
 
 @dataclass(frozen=True)
@@ -194,9 +194,70 @@ def test_pre_restore_backup_uses_current_live_job_inputs_not_historical_manifest
 
     assert cast(Path, recorded_kwargs["source"]) == destination_root
     assert recorded_kwargs["backup_origin"] == "pre_restore"
+    assert (
+        recorded_kwargs["backup_note"] == "Pre-restore safety backup created before restoring run "
+        f"restore-run over active files at {destination_root}"
+    )
     assert recorded_kwargs["job_id"] == live_job_id
     assert recorded_kwargs["job_name"] == "Current Live Job"
     assert recorded_kwargs["compression"] == "zip"
+    assert recorded_kwargs["compress"] is True
+
+
+def test_pre_restore_backup_note_uses_archive_name_when_restore_manifest_references_archive(
+    tmp_path: Path,
+) -> None:
+    destination_root = tmp_path / "live_world"
+
+    note = _build_pre_restore_backup_note(
+        run_payload={
+            "run_id": "restore-run",
+            "archive": {
+                "relative_path": "incoming-run.OZ0.zip",
+            },
+        },
+        destination_root=destination_root,
+    )
+
+    assert (
+        note == "Pre-restore safety backup created before restoring archive "
+        f"incoming-run.OZ0.zip over active files at {destination_root}"
+    )
+
+
+def test_pre_restore_backup_can_disable_compression_by_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "world.dat").write_text("restored", encoding="utf-8")
+    manifest_path = tmp_path / "restore_manifest.json"
+    _write_restore_manifest(manifest_path, archive_root)
+
+    destination_root = tmp_path / "live_world"
+    destination_root.mkdir()
+    (destination_root / "world.dat").write_text("current-live", encoding="utf-8")
+
+    recorded_kwargs: dict[str, object] = {}
+
+    def _run_backup(**kwargs: object) -> BackupRunResult:
+        recorded_kwargs.update(kwargs)
+        return _dummy_backup_result(destination_root)
+
+    monkeypatch.setattr("backup_engine.restore.service.run_backup", _run_backup)
+
+    run_restore(
+        manifest_path=manifest_path,
+        destination_root=destination_root,
+        mode="overwrite",
+        verify="none",
+        dry_run=False,
+        data_root=tmp_path / "data_root",
+        pre_restore_backup_compression="none",
+    )
+
+    assert recorded_kwargs["compression"] == "none"
+    assert recorded_kwargs["compress"] is False
 
 
 def test_pre_restore_backup_with_oz0_backed_live_job_writes_normal_oz0_artifacts(

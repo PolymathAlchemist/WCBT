@@ -204,6 +204,7 @@ class BackupRunManifestV2:
     profile_name: str
     source_root: str
     backup_origin: str | None = None
+    backup_note: str | None = None
     job_id: str | None = None
     job_name: str | None = None
     operations: list[Mapping[str, Any]] = field(default_factory=list)
@@ -226,6 +227,8 @@ class BackupRunManifestV2:
         }
         if self.backup_origin is not None:
             payload["backup_origin"] = self.backup_origin
+        if self.backup_note is not None:
+            payload["backup_note"] = self.backup_note
         if self.job_id is not None:
             payload["job_id"] = self.job_id
         if self.job_name is not None:
@@ -305,6 +308,9 @@ class BackupRunManifestV2:
             source_root=str(payload["source_root"]),
             backup_origin=(
                 str(payload["backup_origin"]) if payload.get("backup_origin") is not None else None
+            ),
+            backup_note=(
+                str(payload["backup_note"]) if payload.get("backup_note") is not None else None
             ),
             job_id=str(payload["job_id"]) if payload.get("job_id") is not None else None,
             job_name=str(payload["job_name"]) if payload.get("job_name") is not None else None,
@@ -583,6 +589,7 @@ class BackupRunSummary:
     profile_name: str | None
     source_root: str | None
     backup_origin: str | None
+    backup_note: str | None
     job_id: str | None
     job_name: str | None
 
@@ -674,6 +681,7 @@ def list_backup_runs(
                 profile_name=_opt_str("profile_name"),
                 source_root=_opt_str("source_root"),
                 backup_origin=_opt_str("backup_origin"),
+                backup_note=_opt_str("backup_note"),
                 job_id=_opt_str("job_id"),
                 job_name=_opt_str("job_name"),
             )

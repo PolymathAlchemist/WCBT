@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
 
 from backup_engine.backup.service import BackupRunResult, run_backup
 from backup_engine.job_binding import JobBinding
+from backup_engine.oz0_paths import resolve_oz0_artifact_root
 from backup_engine.profile_store.errors import UnknownJobError
 from backup_engine.profile_store.sqlite_store import open_profile_store
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
@@ -181,6 +182,7 @@ class BackupWorker(QObject):
         self._job_name: str | None = None
         self._source: Path | None = None
         self._mode: str = "plan"
+        self._backup_note: str = ""
 
     def configure(
         self,
@@ -188,6 +190,7 @@ class BackupWorker(QObject):
         job_name: str,
         source: Path,
         mode: str,
+        backup_note: str = "",
         *,
         data_root: Path | None,
         default_compression: str,
@@ -203,6 +206,7 @@ class BackupWorker(QObject):
         self._job_name = job_name
         self._source = source
         self._mode = mode
+        self._backup_note = backup_note
         self._data_root = data_root
         self._default_compression = default_compression
 
@@ -227,6 +231,7 @@ class BackupWorker(QObject):
                     write_plan=True,
                     job_id=self._job_id,
                     job_name=self._job_name,
+                    backup_note=self._backup_note,
                     compression=compression,
                 )
             elif mode == "materialize":
@@ -238,6 +243,7 @@ class BackupWorker(QObject):
                     execute=False,
                     job_id=self._job_id,
                     job_name=self._job_name,
+                    backup_note=self._backup_note,
                 )
             elif mode == "execute":
                 result = run_backup(
@@ -248,6 +254,7 @@ class BackupWorker(QObject):
                     execute=True,
                     job_id=self._job_id,
                     job_name=self._job_name,
+                    backup_note=self._backup_note,
                 )
             elif mode == "execute+compress":
                 result = run_backup(
@@ -260,6 +267,7 @@ class BackupWorker(QObject):
                     compression="zip",
                     job_id=self._job_id,
                     job_name=self._job_name,
+                    backup_note=self._backup_note,
                 )
             else:
                 raise ValueError(f"Unknown run mode: {mode!r}")
@@ -389,6 +397,10 @@ class RunTab(QWidget):
         run_mode_row.addWidget(self.mode_combo, 1)
         job_stack.addLayout(run_mode_row)
 
+        self.backup_note_edit = QLineEdit()
+        self.backup_note_edit.setPlaceholderText("Optional note for this backup run")
+        job_stack.addLayout(self._build_backup_note_row())
+
         self._apply_default_run_mode()
         self.mode_combo.currentIndexChanged.connect(self._on_run_mode_changed)
         self._loading_settings = False
@@ -478,6 +490,7 @@ class RunTab(QWidget):
             restore_mode=self._settings.restore_mode,
             restore_verify=self._settings.restore_verify,
             restore_dry_run=self._settings.restore_dry_run,
+            pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
         )
         save_gui_settings(data_root=None, settings=updated_settings)
         self._settings = updated_settings
@@ -592,17 +605,36 @@ class RunTab(QWidget):
             binding.job_name,
             source,
             mode,
+            self.backup_note_edit.text(),
             data_root=self._settings.data_root,
             default_compression=self._settings.default_compression,
         )
         QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
 
+    def _build_backup_note_row(self) -> QHBoxLayout:
+        """
+        Build the optional backup note input row.
+
+        Returns
+        -------
+        QHBoxLayout
+            Layout containing the backup note controls.
+        """
+        note_row = QHBoxLayout()
+        note_row.addWidget(QLabel("Backup note:"))
+        note_row.addWidget(self.backup_note_edit, 1)
+        return note_row
+
     def _open_artifacts(self) -> None:
-        if self._last_result is None:
-            QMessageBox.information(self, "Artifacts", "Run a backup first.")
+        binding = self._current_job_binding
+        if binding is None or not binding.source_root.strip():
+            QMessageBox.information(
+                self, "Artifacts", "Select a job with a saved source folder first."
+            )
             return
 
-        root = self._last_result.archive_root
+        root = resolve_oz0_artifact_root(Path(binding.source_root))
+        root.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
     def _on_backup_finished(self, result_obj: object) -> None:

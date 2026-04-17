@@ -232,6 +232,10 @@ def test_end_to_end_backup_compress_zip_then_restore_from_archive(tmp_path: Path
     assert artifacts_root.is_dir(), (
         "Expected restore artifacts root to be a directory after promotion."
     )
+    assert not restore_destination.with_name(
+        f"{restore_destination.name}.wcbt_restore_extract"
+    ).exists()
+    assert not restore_destination.with_name(f"{restore_destination.name}.wcbt_stage").exists()
     staging_root = data_root / "profiles" / "end_to_end" / "work" / "oz0_staging"
     assert (not staging_root.exists()) or (not any(staging_root.iterdir()))
 

@@ -520,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=False,
                 data_root=data_root,
                 backup_origin="scheduled",
+                backup_note="Scheduled backup executed by scheduler",
                 execute=True,
                 compress=compression != "none",
                 compression=compression,

@@ -25,6 +25,7 @@ class GuiSettings:
     restore_mode: str = "add-only"  # "add-only" | "overwrite"
     restore_verify: str = "size"  # "none" | "size"
     restore_dry_run: bool = True
+    pre_restore_backup_compression: str = "zip"  # "tar.zst" | "zip" | "none"
 
     @staticmethod
     def defaults() -> "GuiSettings":
@@ -36,6 +37,7 @@ class GuiSettings:
             restore_mode="add-only",
             restore_verify="size",
             restore_dry_run=True,
+            pre_restore_backup_compression="zip",
         )
 
 
@@ -95,6 +97,10 @@ def load_gui_settings(*, data_root: Path | None) -> GuiSettings:
         if not isinstance(restore_dry_run, bool):
             restore_dry_run = True
 
+        pre_restore_backup_compression = payload.get("pre_restore_backup_compression", "zip")
+        if pre_restore_backup_compression not in {"tar.zst", "zip", "none"}:
+            pre_restore_backup_compression = "zip"
+
         return GuiSettings(
             data_root=data_root_val,
             archives_root=archives_root_val,
@@ -103,6 +109,7 @@ def load_gui_settings(*, data_root: Path | None) -> GuiSettings:
             restore_mode=str(restore_mode),
             restore_verify=str(restore_verify),
             restore_dry_run=restore_dry_run,
+            pre_restore_backup_compression=str(pre_restore_backup_compression),
         )
     except FileNotFoundError:
         return GuiSettings.defaults()
@@ -134,5 +141,6 @@ def save_gui_settings(*, data_root: Path | None, settings: GuiSettings) -> None:
         "restore_mode": settings.restore_mode,
         "restore_verify": settings.restore_verify,
         "restore_dry_run": settings.restore_dry_run,
+        "pre_restore_backup_compression": settings.pre_restore_backup_compression,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
