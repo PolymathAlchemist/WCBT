@@ -48,9 +48,53 @@ from backup_engine.manifest_store import list_backup_runs
 from backup_engine.restore.service import RestoreRunResult, run_restore
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
 
+_ALL_HISTORY_LABEL = "All history"
+
 
 def _format_mtime(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _backup_origin_display_label(backup_origin: str | None) -> str | None:
+    """
+    Return a human-readable label for a manifest backup origin.
+
+    Parameters
+    ----------
+    backup_origin : str | None
+        Raw manifest backup origin value.
+
+    Returns
+    -------
+    str | None
+        User-facing label for a recognized origin, otherwise ``None``.
+    """
+    labels = {
+        "normal": "Normal backup",
+        "scheduled": "Scheduled backup",
+        "pre_restore": "Pre-restore safeguard backup",
+    }
+    return labels.get(backup_origin)
+
+
+def _history_backup_origin_suffix(backup_origin: str | None) -> str:
+    """
+    Build the compact history-row suffix for non-default backup origins.
+
+    Parameters
+    ----------
+    backup_origin : str | None
+        Raw manifest backup origin value.
+
+    Returns
+    -------
+    str
+        Compact suffix appended to history row text for recognized origins.
+    """
+    origin_label = _backup_origin_display_label(backup_origin)
+    if origin_label is None:
+        return ""
+    return f"  [{origin_label}]"
 
 
 def _mono() -> QFont:
@@ -71,6 +115,11 @@ def _safe_read_manifest_summary(manifest_path: Path) -> dict[str, object]:
         for k in ["run_id", "created_at", "source_root", "profile_name", "version"]:
             if k in data:
                 summary[k] = data[k]
+        backup_origin_label = _backup_origin_display_label(
+            data.get("backup_origin") if isinstance(data.get("backup_origin"), str) else None
+        )
+        if backup_origin_label is not None:
+            summary["backup_origin"] = backup_origin_label
         summary["top_level_keys"] = sorted(list(data.keys()))[:25]
         return summary
 
@@ -349,12 +398,15 @@ class RestoreTab(QWidget):
         QApplication.clipboard().setText(text)
         QMessageBox.information(self, "Restore Summary", "Copied restore summary to clipboard.")
 
-    def _selected_job_id(self) -> str:
-        return str(self.job_combo.currentData())
+    def _selected_job_id(self) -> str | None:
+        current_job_id = self.job_combo.currentData()
+        if current_job_id is None:
+            return None
+        return str(current_job_id)
 
     def _on_job_changed(self) -> None:
         job_id = self._selected_job_id()
-        if job_id:
+        if job_id is not None:
             self._store.request_load_restore_defaults.emit(job_id)
         self._refresh_history()
 
@@ -368,19 +420,20 @@ class RestoreTab(QWidget):
         self.job_combo.blockSignals(True)
         try:
             self.job_combo.clear()
+            self.job_combo.addItem(_ALL_HISTORY_LABEL, None)
             for js in jobs:
                 job_id = str(getattr(js, "job_id"))
                 name = str(getattr(js, "name"))
                 self.job_combo.addItem(name, job_id)
+            self.job_combo.setCurrentIndex(1 if len(jobs) > 0 else 0)
         finally:
             self.job_combo.blockSignals(False)
 
-        if self.job_combo.count() == 0:
-            self.job_combo.setEnabled(False)
-            self.details.setPlainText("No jobs yet. Create one in Authoring.")
-            return
-
         self.job_combo.setEnabled(True)
+        if len(jobs) == 0:
+            self.details.setPlainText(
+                "No active jobs. Choose an archive root to browse restore history."
+            )
         self._on_job_changed()
 
     def _on_store_error(self, job_id: str, message: str) -> None:
@@ -388,7 +441,8 @@ class RestoreTab(QWidget):
 
     def _on_restore_defaults_loaded(self, job_id: str, payload: object) -> None:
         # Only apply if the currently selected job matches.
-        if job_id != self._selected_job_id():
+        selected_job_id = self._selected_job_id()
+        if selected_job_id is None or job_id != selected_job_id:
             return
 
         try:
@@ -418,7 +472,7 @@ class RestoreTab(QWidget):
 
     def _on_archive_root_changed(self) -> None:
         job_id = self._selected_job_id()
-        if job_id:
+        if job_id is not None:
             self._store.request_save_restore_defaults.emit(
                 job_id,
                 {
@@ -430,7 +484,7 @@ class RestoreTab(QWidget):
 
     def _on_dest_changed(self) -> None:
         job_id = self._selected_job_id()
-        if not job_id:
+        if job_id is None:
             return
         self._store.request_save_restore_defaults.emit(
             job_id,
@@ -451,12 +505,11 @@ class RestoreTab(QWidget):
             self.btn_restore.setEnabled(False)
         if hasattr(self, "restore_resolution"):
             self.restore_resolution.setPlainText("")
-        if self.job_combo.count() == 0:
-            self.details.setPlainText("No jobs yet. Create one in Authoring.")
-            return
 
         if not archive_text:
-            self.details.setPlainText("Choose an archive root to scan for manifests.")
+            self.details.setPlainText(
+                "Choose an archive root to scan for manifests, including historical runs."
+            )
             return
 
         root = Path(archive_text)
@@ -468,9 +521,12 @@ class RestoreTab(QWidget):
         runs = list_backup_runs(root, limit=500)
 
         for r in runs:
-            if r.job_id is not None and selected_job_id and r.job_id != selected_job_id:
+            if selected_job_id is not None and r.job_id is not None and r.job_id != selected_job_id:
                 continue
-            text = f"{r.modified_at_utc}  {r.run_id}  {r.manifest_path}"
+            text = (
+                f"{r.modified_at_utc}  {r.run_id}  {r.manifest_path}"
+                f"{_history_backup_origin_suffix(r.backup_origin)}"
+            )
             if needle and needle not in text.lower():
                 continue
 
@@ -615,7 +671,12 @@ class RestoreTab(QWidget):
         lines.append(f"  path: {manifest_path}")
         lines.append(f"  folder: {manifest_path.parent}")
         lines.append(f"  modified: {_format_mtime(mtime)}")
-
+        backup_origin_label = None
+        backup_origin_value = summary.get("backup_origin") if summary else None
+        if isinstance(backup_origin_value, str):
+            backup_origin_label = backup_origin_value
+        if backup_origin_label is not None:
+            lines.append(f"  backup_origin: {backup_origin_label}")
         lines.append(f"  size_bytes: {size}")
         if summary:
             lines.append("")

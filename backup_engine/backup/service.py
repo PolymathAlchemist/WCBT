@@ -73,6 +73,7 @@ class BackupRunContext:
     profile_name: str
     source_root: Path
     artifact_root: Path
+    backup_origin: str = "normal"
     staging_dir: Path | None = None
     root_label: str = "Archive root"
 
@@ -239,6 +240,7 @@ def run_backup(
         profile_name=profile_name,
         source_root=source_root,
         artifact_root=oz0_root if dry_run or compression_requested else archive_root,
+        backup_origin=backup_origin,
         staging_dir=archive_root if compression_requested and not dry_run else None,
         root_label="Artifact root" if compression_requested else "Archive root",
     )
@@ -784,9 +786,17 @@ def _build_backup_report_text(
     max_items: int,
 ) -> str:
     """Build the full human-readable report that is printed and optionally persisted."""
+    backup_origin_labels = {
+        "normal": "Normal backup",
+        "scheduled": "Scheduled backup",
+        "pre_restore": "Pre-restore safeguard backup",
+    }
     lines: list[str] = []
     lines.append(f"Profile     : {context.profile_name}")
     lines.append(f"Source root : {context.source_root}")
+    lines.append(
+        f"Backup origin: {backup_origin_labels.get(context.backup_origin, context.backup_origin)}"
+    )
     if context.staging_dir is not None:
         lines.append(f"Staging dir : {context.staging_dir}")
         lines.append(f"Artifact root: {context.artifact_root}")

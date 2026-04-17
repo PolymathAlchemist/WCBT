@@ -68,6 +68,7 @@ def test_backup_worker_plan_mode_uses_oz0_artifact_root_in_report_text(tmp_path:
     expected_oz0_root = source_root.parent / "OZ0"
 
     assert f"Source root : {source_root}" in report_lines
+    assert "Backup origin: Normal backup" in report_lines
     assert f"Artifact root: {expected_oz0_root}" in report_lines
     assert all(not line.startswith("Archive root:") for line in report_lines)
     assert result.archive_root == expected_oz0_root
@@ -142,6 +143,7 @@ def test_run_tab_plan_mode_visible_summary_and_open_folder_use_oz0_root(
         expected_oz0_root = source_root.parent / "OZ0"
         legacy_archives_root = str(data_root / "profiles" / "default" / "archives")
 
+        assert "Backup origin: Normal backup" in summary_text
         assert f"Artifact root: {expected_oz0_root}" in summary_text
         assert legacy_archives_root not in summary_text
         assert tab._last_result is not None  # noqa: SLF001

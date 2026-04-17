@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import cast
 
 from _pytest.monkeypatch import MonkeyPatch
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QApplication
 
 from backup_engine.profile_store.api import JobSummary
@@ -62,6 +62,7 @@ def test_restore_history_filters_new_runs_by_job_id_and_keeps_legacy_visible(
             "plan_text_path": str(archive_root / "run-job-a" / "plan.txt"),
             "profile_name": "default",
             "source_root": "C:/source",
+            "backup_origin": "normal",
             "job_id": "job-a-id",
             "job_name": "Job A",
             "operations": [],
@@ -78,6 +79,7 @@ def test_restore_history_filters_new_runs_by_job_id_and_keeps_legacy_visible(
             "plan_text_path": str(archive_root / "run-job-b" / "plan.txt"),
             "profile_name": "default",
             "source_root": "C:/source",
+            "backup_origin": "scheduled",
             "job_id": "job-b-id",
             "job_name": "Job B",
             "operations": [],
@@ -111,14 +113,194 @@ def test_restore_history_filters_new_runs_by_job_id_and_keeps_legacy_visible(
 
         visible_for_a = [tab.history.item(i).text() for i in range(tab.history.count())]
         assert any("run-job-a" in item for item in visible_for_a)
+        assert any("[Normal backup]" in item for item in visible_for_a)
         assert not any("run-job-b" in item for item in visible_for_a)
         assert any("run-legacy" in item for item in visible_for_a)
 
-        tab.job_combo.setCurrentIndex(1)
+        tab.job_combo.setCurrentIndex(2)
 
         visible_for_b = [tab.history.item(i).text() for i in range(tab.history.count())]
         assert any("run-job-b" in item for item in visible_for_b)
+        assert any("[Scheduled backup]" in item for item in visible_for_b)
         assert not any("run-job-a" in item for item in visible_for_b)
         assert any("run-legacy" in item for item in visible_for_b)
+    finally:
+        tab.shutdown()
+
+
+def test_restore_history_with_zero_active_jobs_still_populates_from_manifests(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+
+    archive_root = tmp_path / "archive"
+    manifest_path = archive_root / "run-orphaned" / "manifest.json"
+    _write_manifest(
+        manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-orphaned",
+            "created_at_utc": "2026-01-03T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-orphaned" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "job_id": "deleted-job-id",
+            "job_name": "Deleted Job",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([])  # noqa: SLF001
+        tab.archive_root.setText(str(archive_root))
+
+        assert tab.job_combo.count() == 1
+        assert tab.job_combo.itemText(0) == "All history"
+        assert tab.history.count() == 1
+        assert "run-orphaned" in tab.history.item(0).text()
+        assert tab.btn_restore.isEnabled()
+    finally:
+        tab.shutdown()
+
+
+def test_restore_history_all_history_keeps_missing_job_manifests_visible(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+
+    archive_root = tmp_path / "archive"
+
+    _write_manifest(
+        archive_root / "run-job-a" / "manifest.json",
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-job-a",
+            "created_at_utc": "2026-01-01T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-job-a" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "job_id": "job-a-id",
+            "job_name": "Job A",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+    _write_manifest(
+        archive_root / "run-missing-job" / "manifest.json",
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-missing-job",
+            "created_at_utc": "2026-01-04T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-missing-job" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "job_id": "missing-job-id",
+            "job_name": "Missing Job",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([JobSummary(job_id="job-a-id", name="Job A")])  # noqa: SLF001
+        tab.archive_root.setText(str(archive_root))
+        tab.job_combo.setCurrentIndex(0)
+
+        visible_items = [tab.history.item(i).text() for i in range(tab.history.count())]
+        current_item = tab.history.currentItem()
+
+        assert any("run-job-a" in item for item in visible_items)
+        assert any("run-missing-job" in item for item in visible_items)
+        assert tab.btn_restore.isEnabled()
+        assert current_item is not None
+        assert tab._selected_manifest_path == Path(str(current_item.data(Qt.ItemDataRole.UserRole)))
+    finally:
+        tab.shutdown()
+
+
+def test_restore_history_details_show_pre_restore_backup_origin(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+
+    archive_root = tmp_path / "archive"
+    manifest_path = archive_root / "run-pre-restore" / "manifest.json"
+    _write_manifest(
+        manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-pre-restore",
+            "created_at_utc": "2026-01-05T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-pre-restore" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "backup_origin": "pre_restore",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([])  # noqa: SLF001
+        tab.archive_root.setText(str(archive_root))
+
+        history_text = tab.history.item(0).text()
+        details_text = tab.details.toPlainText()
+
+        assert "[Pre-restore safeguard backup]" in history_text
+        assert "backup_origin: Pre-restore safeguard backup" in details_text
+    finally:
+        tab.shutdown()
+
+
+def test_restore_history_details_show_normal_backup_origin(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+
+    archive_root = tmp_path / "archive"
+    manifest_path = archive_root / "run-normal" / "manifest.json"
+    _write_manifest(
+        manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-normal",
+            "created_at_utc": "2026-01-06T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-normal" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "backup_origin": "normal",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([])  # noqa: SLF001
+        tab.archive_root.setText(str(archive_root))
+
+        history_text = tab.history.item(0).text()
+        details_text = tab.details.toPlainText()
+
+        assert "[Normal backup]" in history_text
+        assert "backup_origin: Normal backup" in details_text
     finally:
         tab.shutdown()
