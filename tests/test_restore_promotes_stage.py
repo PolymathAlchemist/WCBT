@@ -10,6 +10,10 @@ from backup_engine.restore.journal import Clock
 from backup_engine.restore.service import run_restore
 
 
+def _runtime_artifacts_parent(destination_root: Path) -> Path:
+    return destination_root.with_name(f"{destination_root.name}.wcbt_restore")
+
+
 @dataclass(frozen=True)
 class FixedClock(Clock):
     now_value: datetime
@@ -56,8 +60,7 @@ def test_restore_non_dry_run_promotes_stage_to_destination(tmp_path: Path) -> No
 
     transient_stage_root = destination_root.with_name(f"{destination_root.name}.wcbt_stage")
 
-    # Destination should now be the promoted stage and contain restore artifacts.
-    restore_root = destination_root / ".wcbt_restore"
+    restore_root = _runtime_artifacts_parent(destination_root)
     assert restore_root.exists()
     run_dirs = [p for p in restore_root.iterdir() if p.is_dir()]
     assert len(run_dirs) == 1
@@ -75,3 +78,4 @@ def test_restore_non_dry_run_promotes_stage_to_destination(tmp_path: Path) -> No
     oz0_root = destination_root.parent / f"{destination_root.name}.OZ0"
     assert any(oz0_root.glob("*.OZ0.zip"))
     assert not transient_stage_root.exists()
+    assert not (destination_root / ".wcbt_restore").exists()

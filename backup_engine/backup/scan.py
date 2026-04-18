@@ -70,6 +70,7 @@ DEFAULT_EXCLUDED_DIRECTORY_NAMES: frozenset[str] = frozenset(
         ".idea",
         ".vscode",
         ".vs",
+        ".wcbt_restore",
     }
 )
 

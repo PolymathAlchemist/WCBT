@@ -11,6 +11,10 @@ from backup_engine.restore.materialize import materialize_restore_candidates
 from backup_engine.restore.service import run_restore
 
 
+def _runtime_artifacts_root(destination_root: Path, run_id: str) -> Path:
+    return destination_root.with_name(f"{destination_root.name}.wcbt_restore") / run_id
+
+
 def _make_plan(
     *,
     archive_root: Path,
@@ -77,7 +81,7 @@ def test_restore_add_only_conflict_fails_with_artifact(tmp_path: Path) -> None:
             dry_run=True,
         )
 
-    conflicts = dest / ".wcbt_restore" / "run1" / "restore_conflicts.jsonl"
+    conflicts = _runtime_artifacts_root(dest, "run1") / "restore_conflicts.jsonl"
     assert conflicts.is_file()
 
 

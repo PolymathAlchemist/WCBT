@@ -9,6 +9,10 @@ import backup_engine.restore.service as restore_service
 from backup_engine.restore.service import run_restore
 
 
+def _runtime_artifacts_root(destination_root: Path, run_id: str) -> Path:
+    return destination_root.with_name(f"{destination_root.name}.wcbt_restore") / run_id
+
+
 def _write_run_manifest(manifest_path: Path, archive_root: Path) -> None:
     """
     Minimal v2 run manifest for restore tests.
@@ -62,13 +66,8 @@ def test_run_restore_non_dry_run_promotes_to_destination(tmp_path: Path) -> None
     assert (dest_root / "nested" / "b.txt").read_text(encoding="utf-8") == "there"
 
     # Assert: artifacts exist (plan/candidates)
-    restore_root = dest_root / ".wcbt_restore"
-    assert restore_root.exists()
-
-    run_dirs = [p for p in restore_root.iterdir() if p.is_dir()]
-    assert len(run_dirs) == 1
-
-    run_dir = run_dirs[0]
+    run_dir = _runtime_artifacts_root(dest_root, "test_run")
+    assert run_dir.exists()
     assert (run_dir / "restore_plan.json").exists()
     assert (run_dir / "restore_candidates.jsonl").exists()
     assert (run_dir / "execution_journal.jsonl").exists()
@@ -76,6 +75,7 @@ def test_run_restore_non_dry_run_promotes_to_destination(tmp_path: Path) -> None
     # Assert: stage_root removed after promotion
     assert not (run_dir / "stage_root").exists()
     assert not stage_parent.exists()
+    assert not (dest_root / ".wcbt_restore").exists()
 
 
 def test_run_restore_failure_preserves_transient_stage_directory(
@@ -113,7 +113,8 @@ def test_run_restore_failure_preserves_transient_stage_directory(
         )
 
     stage_parent = dest_root.with_name(f"{dest_root.name}.wcbt_stage")
-    assert stage_parent.exists()
+    assert not stage_parent.exists()
+    assert not (dest_root / ".wcbt_restore").exists()
 
 
 def test_run_restore_uncompressed_pre_restore_backup_preserves_previous_root(
@@ -139,14 +140,12 @@ def test_run_restore_uncompressed_pre_restore_backup_preserves_previous_root(
         mode="overwrite",
         verify="size",
         dry_run=False,
-        data_root=None,
+        data_root=tmp_path,
         pre_restore_backup_compression="none",
     )
 
-    restore_root = dest_root / ".wcbt_restore"
-    run_dirs = [p for p in restore_root.iterdir() if p.is_dir()]
-    assert len(run_dirs) == 1
-
-    previous_root = tmp_path / f".wcbt_restore_previous_{dest_root.name}_{run_dirs[0].name}"
+    previous_root = tmp_path / ".wcbt_restore_previous_dest_test_run"
     assert previous_root.exists()
     assert (previous_root / "old.txt").read_text(encoding="utf-8") == "old"
+    assert _runtime_artifacts_root(dest_root, "test_run").exists()
+    assert not (dest_root / ".wcbt_restore").exists()

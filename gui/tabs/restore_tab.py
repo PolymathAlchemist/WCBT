@@ -8,6 +8,7 @@ Restore tab (engine-backed).
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +52,7 @@ from backup_engine.oz0_paths import (
     resolve_oz0_artifact_root,
     resolve_primary_oz0_root,
 )
+from backup_engine.paths_and_safety import resolve_profile_paths
 from backup_engine.profile_store.sqlite_store import open_profile_store
 from backup_engine.restore.service import RestoreRunResult, run_restore
 from gui.adapters.profile_store_adapter import ProfileStoreAdapter
@@ -58,6 +60,24 @@ from gui.settings_store import GuiSettings, load_gui_settings, save_gui_settings
 
 _ALL_HISTORY_LABEL = "All history"
 _ALL_HISTORY_SETTINGS_SELECTION = "__all_history__"
+_LOGGER = logging.getLogger(__name__)
+
+
+def _trace_restore_runtime(label: str, **values: object) -> None:
+    """
+    Emit a temporary restore runtime trace for live diagnosis.
+
+    Parameters
+    ----------
+    label:
+        Short trace label describing the current trace point.
+    **values:
+        Key/value pairs to render.
+    """
+    rendered_values = ", ".join(f"{key}={value!s}" for key, value in values.items())
+    message = f"[WCBT restore trace] {label}: {rendered_values}"
+    print(message)
+    _LOGGER.warning(message)
 
 
 def _format_mtime(ts: float) -> str:
@@ -169,6 +189,7 @@ class RestoreWorker(QObject):
         mode: str,
         verify: str,
         dry_run: bool,
+        data_root: Path | None,
         pre_restore_backup_compression: str,
     ) -> None:
         """
@@ -183,7 +204,17 @@ class RestoreWorker(QObject):
         self._mode = mode
         self._verify = verify
         self._dry_run = dry_run
+        self._data_root = data_root
         self._pre_restore_backup_compression = pre_restore_backup_compression
+        _trace_restore_runtime(
+            "worker_configure",
+            manifest_path=manifest_path,
+            destination_root=destination_root,
+            data_root=self._data_root,
+            mode=self._mode,
+            verify=self._verify,
+            dry_run=self._dry_run,
+        )
 
     @Slot()
     def run(self) -> None:
@@ -192,6 +223,12 @@ class RestoreWorker(QObject):
             return
 
         try:
+            _trace_restore_runtime(
+                "worker_run",
+                manifest_path=self._manifest_path,
+                destination_root=self._destination_root,
+                data_root=self._data_root,
+            )
             result = run_restore(
                 manifest_path=self._manifest_path,
                 destination_root=self._destination_root,
@@ -231,17 +268,15 @@ class RestoreTab(QWidget):
         self._pending_restore_job_selection: str | None = (
             self._settings.last_selected_restore_job_selection
         )
-        self._store = ProfileStoreAdapter(
-            profile_name="default",
-            data_root=self._settings.data_root,
-        )
-        self._store.jobs_loaded.connect(self._on_jobs_loaded)
-        self._store.error.connect(self._on_store_error)
-        self._store.restore_defaults_loaded.connect(self._on_restore_defaults_loaded)
-        self._store.restore_defaults_saved.connect(self._on_restore_defaults_saved)
+        self._store: ProfileStoreAdapter | None = None
+        self._active_store_data_root: Path | None = None
+        self._bind_active_store(self._settings.data_root)
 
         self._selected_manifest_path: Path | None = None
         self._selected_run_summary: BackupRunSummary | None = None
+        self._pending_restore_defaults_job_id: str | None = None
+        self._archive_root_edited_since_load_request = False
+        self._dest_edited_since_load_request = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
@@ -270,6 +305,8 @@ class RestoreTab(QWidget):
 
         self.archive_root_label = QLabel("Artifacts root:")
         self.archive_root = QLineEdit()
+        if self._settings.restore_history_root_override is not None:
+            self.archive_root.setText(self._settings.restore_history_root_override)
         self.archive_root.setPlaceholderText("Select backup archive root to scan for manifests…")
         self.archive_root.textChanged.connect(self._on_archive_root_changed)
         self.archive_root.setPlaceholderText("Authoritative job artifacts root or history override")
@@ -331,6 +368,8 @@ class RestoreTab(QWidget):
         self.restore_layout = QFormLayout(restore_box)
 
         self.dest = QLineEdit()
+        if self._settings.restore_destination_root is not None:
+            self.dest.setText(self._settings.restore_destination_root)
         self.dest.textChanged.connect(self._on_dest_changed)
         btn_browse = QPushButton("Browse…")
         btn_browse.clicked.connect(self._pick_dest)
@@ -394,6 +433,7 @@ class RestoreTab(QWidget):
         self._worker.failed.connect(self._on_restore_failed)
         self._thread.start()
 
+        assert self._store is not None
         self._store.request_list_jobs.emit()
 
     def _compute_restore_resolution(self, manifest_path: Path) -> list[str]:
@@ -457,7 +497,14 @@ class RestoreTab(QWidget):
                 self.archive_root.blockSignals(False)
         self._update_archive_root_field_presentation()
         if job_id is not None:
+            self._ensure_active_store_binding()
+            self._pending_restore_defaults_job_id = job_id
+            self._archive_root_edited_since_load_request = False
+            self._dest_edited_since_load_request = False
+            assert self._store is not None
             self._store.request_load_restore_defaults.emit(job_id)
+        else:
+            self._pending_restore_defaults_job_id = None
         self._refresh_history()
 
     def _on_jobs_loaded(self, jobs_obj: object) -> None:
@@ -507,27 +554,56 @@ class RestoreTab(QWidget):
         except Exception:
             return
 
+        if job_id != self._pending_restore_defaults_job_id:
+            return
+
         self.archive_root.blockSignals(True)
         self.dest.blockSignals(True)
         try:
-            self.archive_root.setText(self._resolve_archive_root_display_text(archive_root))
-            if restore_dest_root is not None:
+            if not self._archive_root_edited_since_load_request:
+                self.archive_root.setText(self._resolve_archive_root_display_text(archive_root))
+            if restore_dest_root is not None and not self._dest_edited_since_load_request:
                 self.dest.setText(restore_dest_root)
         finally:
             self.archive_root.blockSignals(False)
             self.dest.blockSignals(False)
 
+        self._pending_restore_defaults_job_id = None
+        self._archive_root_edited_since_load_request = False
+        self._dest_edited_since_load_request = False
+        self._persist_visible_restore_field_settings()
+        _trace_restore_runtime(
+            "restore_defaults_loaded",
+            job_id=job_id,
+            archive_root=self.archive_root.text().strip() or "(empty)",
+            restore_destination=self.dest.text().strip() or "(empty)",
+            settings_data_root=self._settings.data_root,
+            active_store_data_root=self._active_store_data_root,
+        )
         self._update_archive_root_field_presentation()
         self._refresh_history()
 
     def _on_restore_defaults_saved(self, job_id: str) -> None:
         # No UI action needed; this is here for future status indicators.
+        _trace_restore_runtime(
+            "restore_defaults_saved",
+            job_id=job_id,
+            archive_root=self.archive_root.text().strip() or "(empty)",
+            restore_destination=self.dest.text().strip() or "(empty)",
+            settings_data_root=self._settings.data_root,
+            active_store_data_root=self._active_store_data_root,
+        )
         _ = job_id
 
     def _on_archive_root_changed(self) -> None:
+        if self._pending_restore_defaults_job_id == self._selected_job_id():
+            self._archive_root_edited_since_load_request = True
         self._update_archive_root_field_presentation()
+        self._persist_visible_restore_field_settings()
         job_id = self._selected_job_id()
         if job_id is not None:
+            self._ensure_active_store_binding()
+            assert self._store is not None
             self._store.request_save_restore_defaults.emit(
                 job_id,
                 {
@@ -539,8 +615,13 @@ class RestoreTab(QWidget):
 
     def _on_dest_changed(self) -> None:
         job_id = self._selected_job_id()
+        self._persist_visible_restore_field_settings()
         if job_id is None:
             return
+        if self._pending_restore_defaults_job_id == job_id:
+            self._dest_edited_since_load_request = True
+        self._ensure_active_store_binding()
+        assert self._store is not None
         self._store.request_save_restore_defaults.emit(
             job_id,
             {
@@ -580,6 +661,8 @@ class RestoreTab(QWidget):
             restore_verify=str(self.verify_combo.currentData()),
             restore_dry_run=self.dry_run.isChecked(),
             pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            restore_history_root_override=self._settings.restore_history_root_override,
+            restore_destination_root=self._settings.restore_destination_root,
             last_selected_run_job_id=self._settings.last_selected_run_job_id,
             last_selected_restore_job_selection=self._settings.last_selected_restore_job_selection,
         )
@@ -629,8 +712,45 @@ class RestoreTab(QWidget):
             restore_verify=self._settings.restore_verify,
             restore_dry_run=self._settings.restore_dry_run,
             pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            restore_history_root_override=self._settings.restore_history_root_override,
+            restore_destination_root=self._settings.restore_destination_root,
             last_selected_run_job_id=self._settings.last_selected_run_job_id,
             last_selected_restore_job_selection=selection,
+        )
+        save_gui_settings(data_root=None, settings=updated_settings)
+        self._settings = updated_settings
+
+    def _persist_visible_restore_field_settings(self) -> None:
+        """
+        Persist the currently visible Restore-tab path fields in GUI settings.
+
+        Notes
+        -----
+        The history-root override and destination fields need to survive tab
+        reloads even when no concrete job is selected, so their visible text is
+        also stored in GUI settings in addition to any per-job defaults.
+        """
+        visible_archive_root = self.archive_root.text().strip() or None
+        visible_destination_root = self.dest.text().strip() or None
+        if (
+            self._settings.restore_history_root_override == visible_archive_root
+            and self._settings.restore_destination_root == visible_destination_root
+        ):
+            return
+
+        updated_settings = GuiSettings(
+            data_root=self._settings.data_root,
+            archives_root=self._settings.archives_root,
+            default_compression=self._settings.default_compression,
+            default_run_mode=self._settings.default_run_mode,
+            restore_mode=self._settings.restore_mode,
+            restore_verify=self._settings.restore_verify,
+            restore_dry_run=self._settings.restore_dry_run,
+            pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            restore_history_root_override=visible_archive_root,
+            restore_destination_root=visible_destination_root,
+            last_selected_run_job_id=self._settings.last_selected_run_job_id,
+            last_selected_restore_job_selection=self._settings.last_selected_restore_job_selection,
         )
         save_gui_settings(data_root=None, settings=updated_settings)
         self._settings = updated_settings
@@ -639,7 +759,60 @@ class RestoreTab(QWidget):
         """
         Open the profile store using the persisted GUI settings context.
         """
+        self._refresh_settings_context()
         return open_profile_store(profile_name="default", data_root=self._settings.data_root)
+
+    def _bind_active_store(self, data_root: Path | None) -> None:
+        """
+        Bind the active restore-defaults adapter to the given data root.
+
+        Parameters
+        ----------
+        data_root:
+            Data root that should own restore-default persistence for the tab.
+        """
+        if self._store is not None:
+            self._store.shutdown()
+
+        self._store = ProfileStoreAdapter(
+            profile_name="default",
+            data_root=data_root,
+        )
+        self._store.jobs_loaded.connect(self._on_jobs_loaded)
+        self._store.error.connect(self._on_store_error)
+        self._store.restore_defaults_loaded.connect(self._on_restore_defaults_loaded)
+        self._store.restore_defaults_saved.connect(self._on_restore_defaults_saved)
+        self._active_store_data_root = data_root
+        _trace_restore_runtime(
+            "bind_active_store",
+            settings_data_root=self._settings.data_root,
+            active_store_data_root=self._active_store_data_root,
+        )
+
+    def _ensure_active_store_binding(self) -> None:
+        """
+        Rebind the active restore-defaults adapter when the live data root changes.
+        """
+        self._refresh_settings_context()
+        if self._active_store_data_root != self._settings.data_root:
+            self._bind_active_store(self._settings.data_root)
+
+    def _refresh_settings_context(self) -> None:
+        """
+        Reload the active GUI settings for runtime-sensitive Restore tab actions.
+
+        Notes
+        -----
+        The live GUI settings can change while the tab is already open. Restore
+        launch and job-backed history/discovery must refresh that context so they
+        do not keep using a stale data-root/profile-store location.
+        """
+        self._settings = load_gui_settings(data_root=None)
+        _trace_restore_runtime(
+            "refresh_settings_context",
+            settings_data_root=self._settings.data_root,
+            active_store_data_root=self._active_store_data_root,
+        )
 
     def _load_selected_job_binding_source_root(self) -> Path | None:
         """
@@ -694,10 +867,9 @@ class RestoreTab(QWidget):
 
         Notes
         -----
-        Older sessions could persist the legacy shared ``OZ0`` path in this
-        field. When the selected job now resolves to a target-partitioned OZ0
-        root, that legacy value is stale and should no longer be presented as if
-        it were authoritative.
+        An explicit persisted archive-root value is treated as a manual history
+        override and must be preserved exactly. The authoritative per-job OZ0
+        root is only used when no explicit override exists.
         """
         authoritative_root = self._resolve_authoritative_job_artifacts_root()
         if authoritative_root is None:
@@ -706,15 +878,8 @@ class RestoreTab(QWidget):
         if archive_root is None or not archive_root.strip():
             return str(authoritative_root)
 
-        displayed_root = Path(archive_root)
-        if displayed_root == authoritative_root:
+        if Path(archive_root) == authoritative_root:
             return str(authoritative_root)
-
-        source_root = self._load_selected_job_binding_source_root()
-        if source_root is not None:
-            legacy_root = resolve_legacy_oz0_root(source_root)
-            if displayed_root == legacy_root and legacy_root != authoritative_root:
-                return str(authoritative_root)
 
         return archive_root
 
@@ -1043,6 +1208,21 @@ class RestoreTab(QWidget):
         mode = str(self.mode_combo.currentData())
         verify = str(self.verify_combo.currentData())
         dry_run = self.dry_run.isChecked()
+        self._ensure_active_store_binding()
+        worker_data_root = self._settings.data_root
+        active_profile_paths = resolve_profile_paths("default", data_root=worker_data_root)
+        _trace_restore_runtime(
+            "restore_launch",
+            visible_history_root=self.archive_root.text().strip() or "(empty)",
+            visible_restore_destination=dest_text,
+            gui_settings_data_root=self._settings.data_root,
+            restore_tab_settings_data_root=self._settings.data_root,
+            active_store_data_root=self._active_store_data_root,
+            active_profile_root=active_profile_paths.profile_root,
+            active_work_root=active_profile_paths.work_root,
+            worker_configure_data_root=worker_data_root,
+            manifest_path=manifest_path,
+        )
 
         self._last_result = None
         self.details.setPlainText(f"Running restore…\n\nmode: {mode}")
@@ -1054,6 +1234,7 @@ class RestoreTab(QWidget):
             mode=mode,
             verify=verify,
             dry_run=dry_run,
+            data_root=worker_data_root,
             pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
         )
         QMetaObject.invokeMethod(self._worker, "run", Qt.ConnectionType.QueuedConnection)
@@ -1224,7 +1405,8 @@ class RestoreTab(QWidget):
         """
         self._thread.quit()
         self._thread.wait(2000)
-        self._store.shutdown()
+        if self._store is not None:
+            self._store.shutdown()
 
     def closeEvent(self, event) -> None:
         self.shutdown()

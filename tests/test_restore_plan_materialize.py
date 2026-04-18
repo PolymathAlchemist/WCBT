@@ -12,6 +12,10 @@ from backup_engine.restore.plan import (
 from backup_engine.restore.service import RestoreIntent, run_restore
 
 
+def _runtime_artifacts_root(destination_root: Path, run_id: str) -> Path:
+    return destination_root.with_name(f"{destination_root.name}.wcbt_restore") / run_id
+
+
 def _write_run_manifest(path: Path, archive_root: Path) -> None:
     payload = {
         "schema_version": "wcbt_run_manifest_v2",
@@ -60,7 +64,7 @@ def test_restore_plan_and_candidates_written(tmp_path: Path) -> None:
         data_root=None,
     )
 
-    artifacts_root = dest_root / ".wcbt_restore" / "20251229_035431Z"
+    artifacts_root = _runtime_artifacts_root(dest_root, "20251229_035431Z")
     restore_plan_path = artifacts_root / "restore_plan.json"
     restore_candidates_path = artifacts_root / "restore_candidates.jsonl"
 
@@ -140,7 +144,7 @@ def test_restore_materialize_marks_existing_as_overwrite_in_overwrite_mode(tmp_p
         data_root=None,
     )
 
-    artifacts_root = dest_root / ".wcbt_restore" / "20251229_035431Z"
+    artifacts_root = _runtime_artifacts_root(dest_root, "20251229_035431Z")
     restore_candidates_path = artifacts_root / "restore_candidates.jsonl"
     lines = restore_candidates_path.read_text(encoding="utf-8").splitlines()
     c1 = json.loads(lines[1])

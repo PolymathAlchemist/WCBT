@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import cast
 
 from _pytest.monkeypatch import MonkeyPatch
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QMetaObject, QObject, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from backup_engine.job_binding import JobBinding
 from backup_engine.profile_store.api import JobSummary
 from backup_engine.profile_store.sqlite_store import open_profile_store
+from backup_engine.restore.service import RestoreRunResult
 from gui.settings_store import GuiSettings
 from gui.tabs.restore_tab import RestoreTab, RestoreWorker
 
@@ -54,6 +55,50 @@ class _CapturingProfileStoreAdapter(_FakeProfileStoreAdapter):
     def __init__(self, profile_name: str, data_root: Path | None = None) -> None:
         super().__init__(profile_name=profile_name, data_root=data_root)
         type(self).last_data_root = data_root
+
+
+class _PersistingRestoreDefaultsAdapter(_FakeProfileStoreAdapter):
+    saved_defaults_by_job_id: dict[str, dict[str, str | None]] = {}
+    defer_load_requests = False
+    initialized_data_roots: list[Path | None] = []
+
+    def __init__(self, profile_name: str, data_root: Path | None = None) -> None:
+        super().__init__(profile_name=profile_name, data_root=data_root)
+        type(self).initialized_data_roots.append(data_root)
+        self._pending_load_job_ids: list[str] = []
+        self.request_load_restore_defaults.connect(self._load_defaults)
+        self.request_save_restore_defaults.connect(self._save_defaults)
+
+    def _load_defaults(self, job_id: str) -> None:
+        if type(self).defer_load_requests:
+            self._pending_load_job_ids.append(job_id)
+            return
+        self.restore_defaults_loaded.emit(
+            job_id,
+            type(self).saved_defaults_by_job_id.get(
+                job_id,
+                {"archive_root": None, "restore_dest_root": None},
+            ),
+        )
+
+    def _save_defaults(self, job_id: str, payload: object) -> None:
+        data = cast(dict[str, str | None], payload)
+        type(self).saved_defaults_by_job_id[job_id] = {
+            "archive_root": data.get("archive_root"),
+            "restore_dest_root": data.get("restore_dest_root"),
+        }
+        self.restore_defaults_saved.emit(job_id)
+
+    def emit_pending_defaults(self) -> None:
+        for job_id in self._pending_load_job_ids:
+            self.restore_defaults_loaded.emit(
+                job_id,
+                type(self).saved_defaults_by_job_id.get(
+                    job_id,
+                    {"archive_root": None, "restore_dest_root": None},
+                ),
+            )
+        self._pending_load_job_ids.clear()
 
 
 def test_restore_tab_persists_last_selected_restore_preferences_across_reopen(
@@ -120,6 +165,354 @@ def test_restore_tab_persists_last_selected_job_across_reopen(
         assert str(reopened_tab.job_combo.currentData()) == "job-b"
     finally:
         reopened_tab.shutdown()
+
+
+def test_restore_tab_persists_history_override_and_destination_without_job_defaults(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    history_root = tmp_path / "manual-history-root"
+    destination_root = tmp_path / "restore-destination"
+
+    monkeypatch.setattr("gui.settings_store.default_data_root", lambda: tmp_path)
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: None)
+
+    first_tab = RestoreTab()
+    try:
+        first_tab._on_jobs_loaded([])  # noqa: SLF001
+        first_tab.archive_root.setText(str(history_root))
+        first_tab.dest.setText(str(destination_root))
+    finally:
+        first_tab.shutdown()
+
+    reopened_tab = RestoreTab()
+    try:
+        reopened_tab._on_jobs_loaded([])  # noqa: SLF001
+
+        assert reopened_tab.archive_root.text() == str(history_root)
+        assert reopened_tab.dest.text() == str(destination_root)
+    finally:
+        reopened_tab.shutdown()
+
+
+def test_restore_tab_persists_visible_paths_across_reopen_and_launches_with_them(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    data_root = tmp_path / "persisted-data-root"
+    archive_root = tmp_path / "archive"
+    destination_root = tmp_path / "restore-destination"
+    manifest_path = archive_root / "run-a" / "manifest.json"
+    saved_settings = GuiSettings(
+        data_root=data_root,
+        archives_root=None,
+        default_compression="none",
+        default_run_mode="plan",
+    )
+    recorded_restore_kwargs: dict[str, object] = {}
+
+    _PersistingRestoreDefaultsAdapter.saved_defaults_by_job_id = {}
+    _write_manifest(
+        manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-a",
+            "created_at_utc": "2026-01-01T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-a" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "job_id": "job-a",
+            "job_name": "Job A",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    def _load_settings(*, data_root: Path | None) -> GuiSettings:
+        _ = data_root
+        return saved_settings
+
+    def _save_settings(*, data_root: Path | None, settings: GuiSettings) -> None:
+        nonlocal saved_settings
+        assert data_root is None
+        saved_settings = settings
+
+    def _run_restore(**kwargs: object) -> RestoreRunResult:
+        recorded_restore_kwargs.update(kwargs)
+        return RestoreRunResult(
+            run_id="run-a",
+            manifest_path=cast(Path, kwargs["manifest_path"]),
+            destination_root=cast(Path, kwargs["destination_root"]),
+            dry_run=cast(bool, kwargs["dry_run"]),
+            mode=cast(str, kwargs["mode"]),
+            verify=cast(str, kwargs["verify"]),
+            artifacts_root=tmp_path / "artifacts",
+            stage_root=tmp_path / "stage_root",
+            summary_path=tmp_path / "restore_summary.json",
+        )
+
+    def _run_immediately(worker: object, member: str, *_args: object, **_kwargs: object) -> bool:
+        assert member == "run"
+        getattr(worker, member)()
+        return True
+
+    monkeypatch.setattr(
+        "gui.tabs.restore_tab.ProfileStoreAdapter",
+        _PersistingRestoreDefaultsAdapter,
+    )
+    monkeypatch.setattr("gui.tabs.restore_tab.load_gui_settings", _load_settings)
+    monkeypatch.setattr("gui.tabs.restore_tab.save_gui_settings", _save_settings)
+    monkeypatch.setattr("gui.tabs.restore_tab.run_restore", _run_restore)
+    monkeypatch.setattr(QMetaObject, "invokeMethod", _run_immediately)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: None)
+
+    first_tab = RestoreTab()
+    try:
+        first_tab._on_jobs_loaded([JobSummary(job_id="job-a", name="Job A")])  # noqa: SLF001
+        first_tab.archive_root.setText(str(archive_root))
+        first_tab.dest.setText(str(destination_root))
+    finally:
+        first_tab.shutdown()
+
+    reopened_tab = RestoreTab()
+    try:
+        reopened_tab._on_jobs_loaded([JobSummary(job_id="job-a", name="Job A")])  # noqa: SLF001
+
+        assert reopened_tab.archive_root.text() == str(archive_root)
+        assert reopened_tab.dest.text() == str(destination_root)
+        assert reopened_tab.history.count() == 1
+        assert reopened_tab.history.currentItem() is not None
+
+        visible_archive_root = reopened_tab.archive_root.text()
+        visible_destination_root = reopened_tab.dest.text()
+
+        reopened_tab._restore_selected()  # noqa: SLF001
+
+        assert visible_archive_root == str(archive_root)
+        assert visible_destination_root == str(destination_root)
+        assert recorded_restore_kwargs["manifest_path"] == manifest_path
+        assert recorded_restore_kwargs["destination_root"] == destination_root
+        assert recorded_restore_kwargs["data_root"] == data_root
+    finally:
+        reopened_tab.shutdown()
+
+
+def test_restore_tab_keeps_current_visible_paths_when_stale_defaults_load_late(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    data_root = tmp_path / "persisted-data-root"
+    archive_root = tmp_path / "archive"
+    stale_archive_root = tmp_path / "stale-archive"
+    current_destination_root = tmp_path / "restore-destination"
+    stale_destination_root = tmp_path / "stale-destination"
+    manifest_path = archive_root / "run-a" / "manifest.json"
+    saved_settings = GuiSettings(
+        data_root=data_root,
+        archives_root=None,
+        default_compression="none",
+        default_run_mode="plan",
+    )
+    recorded_restore_kwargs: dict[str, object] = {}
+
+    _PersistingRestoreDefaultsAdapter.saved_defaults_by_job_id = {
+        "job-a": {
+            "archive_root": str(stale_archive_root),
+            "restore_dest_root": str(stale_destination_root),
+        }
+    }
+    _PersistingRestoreDefaultsAdapter.defer_load_requests = True
+
+    _write_manifest(
+        manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-a",
+            "created_at_utc": "2026-01-01T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-a" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "job_id": "job-a",
+            "job_name": "Job A",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    def _load_settings(*, data_root: Path | None) -> GuiSettings:
+        _ = data_root
+        return saved_settings
+
+    def _save_settings(*, data_root: Path | None, settings: GuiSettings) -> None:
+        nonlocal saved_settings
+        assert data_root is None
+        saved_settings = settings
+
+    def _run_restore(**kwargs: object) -> RestoreRunResult:
+        recorded_restore_kwargs.update(kwargs)
+        return RestoreRunResult(
+            run_id="run-a",
+            manifest_path=cast(Path, kwargs["manifest_path"]),
+            destination_root=cast(Path, kwargs["destination_root"]),
+            dry_run=cast(bool, kwargs["dry_run"]),
+            mode=cast(str, kwargs["mode"]),
+            verify=cast(str, kwargs["verify"]),
+            artifacts_root=tmp_path / "artifacts",
+            stage_root=tmp_path / "stage_root",
+            summary_path=tmp_path / "restore_summary.json",
+        )
+
+    def _run_immediately(worker: object, member: str, *_args: object, **_kwargs: object) -> bool:
+        assert member == "run"
+        getattr(worker, member)()
+        return True
+
+    monkeypatch.setattr(
+        "gui.tabs.restore_tab.ProfileStoreAdapter",
+        _PersistingRestoreDefaultsAdapter,
+    )
+    monkeypatch.setattr("gui.tabs.restore_tab.load_gui_settings", _load_settings)
+    monkeypatch.setattr("gui.tabs.restore_tab.save_gui_settings", _save_settings)
+    monkeypatch.setattr("gui.tabs.restore_tab.run_restore", _run_restore)
+    monkeypatch.setattr(QMetaObject, "invokeMethod", _run_immediately)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: None)
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([JobSummary(job_id="job-a", name="Job A")])  # noqa: SLF001
+        tab.archive_root.setText(str(archive_root))
+        tab.dest.setText(str(current_destination_root))
+
+        adapter = cast(_PersistingRestoreDefaultsAdapter, tab._store)
+        adapter.emit_pending_defaults()
+
+        assert tab.archive_root.text() == str(archive_root)
+        assert tab.dest.text() == str(current_destination_root)
+        assert tab.history.count() == 1
+
+        tab._restore_selected()  # noqa: SLF001
+
+        assert recorded_restore_kwargs["manifest_path"] == manifest_path
+        assert recorded_restore_kwargs["destination_root"] == current_destination_root
+        assert recorded_restore_kwargs["data_root"] == data_root
+    finally:
+        _PersistingRestoreDefaultsAdapter.defer_load_requests = False
+        tab.shutdown()
+
+
+def test_restore_tab_launch_refreshes_live_data_root_before_run_restore(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    stale_data_root = tmp_path / "pytest-642" / "stale-data-root"
+    live_data_root = tmp_path / "live-data-root"
+    archive_root = tmp_path / "archive"
+    destination_root = tmp_path / "restore-destination"
+    manifest_path = archive_root / "run-a" / "manifest.json"
+    saved_settings = GuiSettings(
+        data_root=stale_data_root,
+        archives_root=None,
+        default_compression="none",
+        default_run_mode="plan",
+    )
+    recorded_restore_kwargs: dict[str, object] = {}
+
+    _PersistingRestoreDefaultsAdapter.saved_defaults_by_job_id = {
+        "job-a": {
+            "archive_root": str(archive_root),
+            "restore_dest_root": str(destination_root),
+        }
+    }
+    _PersistingRestoreDefaultsAdapter.initialized_data_roots = []
+    _write_manifest(
+        manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-a",
+            "created_at_utc": "2026-01-01T00:00:00Z",
+            "archive_root": str(archive_root),
+            "plan_text_path": str(archive_root / "run-a" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": "C:/source",
+            "job_id": "job-a",
+            "job_name": "Job A",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    def _load_settings(*, data_root: Path | None) -> GuiSettings:
+        _ = data_root
+        return saved_settings
+
+    def _save_settings(*, data_root: Path | None, settings: GuiSettings) -> None:
+        nonlocal saved_settings
+        assert data_root is None
+        saved_settings = settings
+
+    def _run_restore(**kwargs: object) -> RestoreRunResult:
+        recorded_restore_kwargs.update(kwargs)
+        return RestoreRunResult(
+            run_id="run-a",
+            manifest_path=cast(Path, kwargs["manifest_path"]),
+            destination_root=cast(Path, kwargs["destination_root"]),
+            dry_run=cast(bool, kwargs["dry_run"]),
+            mode=cast(str, kwargs["mode"]),
+            verify=cast(str, kwargs["verify"]),
+            artifacts_root=tmp_path / "artifacts",
+            stage_root=tmp_path / "stage_root",
+            summary_path=tmp_path / "restore_summary.json",
+        )
+
+    def _run_immediately(worker: object, member: str, *_args: object, **_kwargs: object) -> bool:
+        assert member == "run"
+        getattr(worker, member)()
+        return True
+
+    monkeypatch.setattr(
+        "gui.tabs.restore_tab.ProfileStoreAdapter",
+        _PersistingRestoreDefaultsAdapter,
+    )
+    monkeypatch.setattr("gui.tabs.restore_tab.load_gui_settings", _load_settings)
+    monkeypatch.setattr("gui.tabs.restore_tab.save_gui_settings", _save_settings)
+    monkeypatch.setattr("gui.tabs.restore_tab.run_restore", _run_restore)
+    monkeypatch.setattr(QMetaObject, "invokeMethod", _run_immediately)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args, **kwargs: None)
+
+    tab = RestoreTab()
+    try:
+        assert tab._worker._data_root == stale_data_root  # noqa: SLF001
+        tab._on_jobs_loaded([JobSummary(job_id="job-a", name="Job A")])  # noqa: SLF001
+        saved_settings = GuiSettings(
+            data_root=live_data_root,
+            archives_root=None,
+            default_compression="none",
+            default_run_mode="plan",
+        )
+
+        tab._restore_selected()  # noqa: SLF001
+
+        assert _PersistingRestoreDefaultsAdapter.initialized_data_roots == [
+            stale_data_root,
+            live_data_root,
+        ]
+        assert recorded_restore_kwargs["data_root"] == live_data_root
+        assert recorded_restore_kwargs["destination_root"] == destination_root
+        assert recorded_restore_kwargs["manifest_path"] == manifest_path
+        assert tab._worker._data_root == live_data_root  # noqa: SLF001
+        assert tab._active_store_data_root == live_data_root  # noqa: SLF001
+    finally:
+        tab.shutdown()
 
 
 def test_restore_history_filters_new_runs_by_job_id_and_keeps_legacy_visible(
@@ -543,6 +936,103 @@ def test_restore_history_marks_field_as_manual_override_when_text_differs_from_a
         tab.archive_root.setText(str(tmp_path / "manual-override"))
 
         assert tab.archive_root_label.text() == "History root override:"
+    finally:
+        tab.shutdown()
+
+
+def test_restore_history_preserves_explicit_shared_root_and_refreshes_multiple_runs(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    _app()
+
+    data_root = tmp_path / "persisted-data-root"
+    source_root = tmp_path / "testing"
+    source_root.mkdir()
+
+    store = open_profile_store(profile_name="default", data_root=data_root)
+    job_id = store.create_job("Minecraft")
+    binding = store.load_job_binding(job_id)
+    store.save_job_binding(
+        JobBinding(
+            job_id=binding.job_id,
+            job_name=binding.job_name,
+            template_id=binding.template_id,
+            source_root=str(source_root),
+        )
+    )
+
+    shared_archive_root = source_root.parent / "OZ0"
+    first_manifest_path = shared_archive_root / "run-a" / "manifest.json"
+    _write_manifest(
+        first_manifest_path,
+        {
+            "schema_version": "wcbt_run_manifest_v2",
+            "run_id": "run-a",
+            "created_at_utc": "2026-01-08T00:00:00Z",
+            "archive_root": str(shared_archive_root),
+            "plan_text_path": str(shared_archive_root / "run-a" / "plan.txt"),
+            "profile_name": "default",
+            "source_root": str(source_root),
+            "job_id": job_id,
+            "job_name": "Minecraft",
+            "operations": [],
+            "scan_issues": [],
+        },
+    )
+
+    settings = GuiSettings(
+        data_root=data_root,
+        archives_root=None,
+        default_compression="none",
+        default_run_mode="plan",
+    )
+
+    monkeypatch.setattr("gui.tabs.restore_tab.ProfileStoreAdapter", _FakeProfileStoreAdapter)
+    monkeypatch.setattr("gui.tabs.restore_tab.load_gui_settings", lambda *, data_root: settings)
+    monkeypatch.setattr(
+        "gui.tabs.restore_tab.save_gui_settings", lambda *, data_root, settings: None
+    )
+
+    tab = RestoreTab()
+    try:
+        tab._on_jobs_loaded([JobSummary(job_id=job_id, name="Minecraft")])  # noqa: SLF001
+        tab._on_restore_defaults_loaded(  # noqa: SLF001
+            job_id,
+            {
+                "archive_root": str(shared_archive_root),
+                "restore_dest_root": str(tmp_path / "restore-destination"),
+            },
+        )
+
+        assert tab.archive_root.text() == str(shared_archive_root)
+        assert tab.history.count() == 1
+        assert "run-a" in tab.history.item(0).text()
+
+        second_manifest_path = shared_archive_root / "run-b" / "manifest.json"
+        _write_manifest(
+            second_manifest_path,
+            {
+                "schema_version": "wcbt_run_manifest_v2",
+                "run_id": "run-b",
+                "created_at_utc": "2026-01-09T00:00:00Z",
+                "archive_root": str(shared_archive_root),
+                "plan_text_path": str(shared_archive_root / "run-b" / "plan.txt"),
+                "profile_name": "default",
+                "source_root": str(source_root),
+                "job_id": job_id,
+                "job_name": "Minecraft",
+                "operations": [],
+                "scan_issues": [],
+            },
+        )
+
+        tab.refresh_on_activate()
+
+        visible_items = [tab.history.item(index).text() for index in range(tab.history.count())]
+        assert tab.archive_root.text() == str(shared_archive_root)
+        assert len(visible_items) == 2
+        assert any("run-a" in item for item in visible_items)
+        assert any("run-b" in item for item in visible_items)
     finally:
         tab.shutdown()
 
@@ -1201,6 +1691,7 @@ def test_restore_worker_passes_pre_restore_backup_compression_policy(
         mode="overwrite",
         verify="size",
         dry_run=False,
+        data_root=tmp_path / "data_root",
         pre_restore_backup_compression="tar.zst",
     )
     worker.run()

@@ -42,3 +42,9 @@ htmlcov/
 # ---- Misc ----
 .DS_Store
 '@ | Set-Content -Encoding UTF8 .gitignore
+
+# WCBT restore / diagnostic artifacts
+_diag_restore/
+_diag_restore_failure/
+*.wcbt_restore*
+*.wcbt_stage/

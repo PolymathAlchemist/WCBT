@@ -491,6 +491,8 @@ class RunTab(QWidget):
             restore_verify=self._settings.restore_verify,
             restore_dry_run=self._settings.restore_dry_run,
             pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            restore_history_root_override=self._settings.restore_history_root_override,
+            restore_destination_root=self._settings.restore_destination_root,
             last_selected_run_job_id=self._settings.last_selected_run_job_id,
             last_selected_restore_job_selection=self._settings.last_selected_restore_job_selection,
         )
@@ -518,6 +520,8 @@ class RunTab(QWidget):
             restore_verify=self._settings.restore_verify,
             restore_dry_run=self._settings.restore_dry_run,
             pre_restore_backup_compression=self._settings.pre_restore_backup_compression,
+            restore_history_root_override=self._settings.restore_history_root_override,
+            restore_destination_root=self._settings.restore_destination_root,
             last_selected_run_job_id=job_id,
             last_selected_restore_job_selection=self._settings.last_selected_restore_job_selection,
         )

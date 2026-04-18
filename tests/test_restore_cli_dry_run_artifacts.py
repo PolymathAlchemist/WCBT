@@ -11,6 +11,10 @@ from backup_engine.restore.journal import Clock
 from backup_engine.restore.service import run_restore
 
 
+def _runtime_artifacts_parent(destination_root: Path) -> Path:
+    return destination_root.with_name(f"{destination_root.name}.wcbt_restore")
+
+
 @dataclass(frozen=True)
 class FixedClock(Clock):
     """Deterministic clock for tests."""
@@ -63,8 +67,7 @@ def test_restore_dry_run_writes_artifacts(tmp_path: Path) -> None:
         clock=FixedClock(datetime(2000, 1, 1, tzinfo=timezone.utc)),
     )
 
-    # Dry-run artifacts are written directly under destination_root/.wcbt_restore/<run_id>/...
-    artifacts_parent = destination_root / ".wcbt_restore"
+    artifacts_parent = _runtime_artifacts_parent(destination_root)
     assert artifacts_parent.exists()
     run_dirs = [p for p in artifacts_parent.iterdir() if p.is_dir()]
     assert len(run_dirs) == 1
@@ -95,5 +98,5 @@ def test_restore_dry_run_writes_artifacts(tmp_path: Path) -> None:
     stage_root = stage_run_dirs[0] / "stage_root"
     assert stage_root.exists()
 
-    # Promotion is skipped in dry-run, so destination_root must still exist.
-    assert destination_root.exists()
+    # Promotion is skipped in dry-run, so the live destination tree is untouched.
+    assert not destination_root.exists()

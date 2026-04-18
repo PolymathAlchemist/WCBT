@@ -421,3 +421,43 @@ def test_all_backup_modes_use_target_relative_oz0_root(
         assert result.manifest_path == expected_manifest
         assert expected_archive.is_file()
         assert expected_manifest.is_file()
+
+
+def test_backup_excludes_restore_transient_residue_but_keeps_user_files(tmp_path: Path) -> None:
+    profile_name = "test_profile"
+
+    source_root = tmp_path / "source"
+    (source_root / "nested").mkdir(parents=True)
+    (source_root / "alpha.txt").write_text("alpha", encoding="utf-8")
+    (source_root / "nested" / "beta.txt").write_text("beta", encoding="utf-8")
+    restore_residue_root = source_root / ".wcbt_restore" / "restore-run"
+    restore_residue_root.mkdir(parents=True)
+    (restore_residue_root / "restore_summary.json").write_text("transient", encoding="utf-8")
+
+    clock = FixedClock(datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc))
+    _create_job_binding(profile_name=profile_name, data_root=tmp_path, source_root=source_root)
+
+    result = run_backup(
+        profile_name=profile_name,
+        source=source_root,
+        dry_run=False,
+        data_root=tmp_path,
+        max_items=100,
+        write_plan=False,
+        clock=clock,
+        execute=True,
+    )
+
+    manifest_path = result.manifest_path
+    assert manifest_path is not None
+    manifest = _read_json(manifest_path)
+    operations = _expect_sequence(manifest["operations"])
+    operation_paths = {
+        str(Path(cast(str, cast(Mapping[str, object], operation)["relative_path"])).as_posix())
+        for operation in operations
+        if isinstance(operation, Mapping)
+    }
+
+    assert "alpha.txt" in operation_paths
+    assert "nested/beta.txt" in operation_paths
+    assert all(".wcbt_restore" not in path for path in operation_paths)

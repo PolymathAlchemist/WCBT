@@ -12,6 +12,10 @@ from backup_engine.clock import FixedClock
 from backup_engine.restore.service import run_restore
 
 
+def _runtime_artifacts_root(destination_root: Path, run_id: str) -> Path:
+    return destination_root.with_name(f"{destination_root.name}.wcbt_restore") / run_id
+
+
 @dataclass(frozen=True)
 class _FileSpec:
     relative_path: Path
@@ -142,12 +146,10 @@ def test_end_to_end_backup_then_restore_verify_size_and_artifacts_survive(tmp_pa
     # Validate restored files.
     _assert_tree_matches(source_root, restore_destination, files)
 
-    # Artifacts must survive promotion and land in the final destination root.
-    artifacts_root = restore_destination / ".wcbt_restore"
+    artifacts_root = _runtime_artifacts_root(restore_destination, manifest_path.parent.name)
     assert artifacts_root.exists(), "Expected restore artifacts root to exist after promotion."
-    assert artifacts_root.is_dir(), (
-        "Expected restore artifacts root to be a directory after promotion."
-    )
+    assert artifacts_root.is_dir(), "Expected restore artifacts root to be a directory."
+    assert not (restore_destination / ".wcbt_restore").exists()
 
 
 def test_end_to_end_backup_compress_zip_then_restore_from_archive(tmp_path: Path) -> None:
@@ -232,11 +234,10 @@ def test_end_to_end_backup_compress_zip_then_restore_from_archive(tmp_path: Path
 
     _assert_tree_matches(source_root, restore_destination, files)
 
-    artifacts_root = restore_destination / ".wcbt_restore"
+    artifacts_root = _runtime_artifacts_root(restore_destination, "20260102_030405Z")
     assert artifacts_root.exists(), "Expected restore artifacts root to exist after promotion."
-    assert artifacts_root.is_dir(), (
-        "Expected restore artifacts root to be a directory after promotion."
-    )
+    assert artifacts_root.is_dir(), "Expected restore artifacts root to be a directory."
+    assert not (restore_destination / ".wcbt_restore").exists()
     assert not restore_destination.with_name(
         f"{restore_destination.name}.wcbt_restore_extract"
     ).exists()
@@ -384,6 +385,89 @@ def test_restore_accepts_manifest_from_legacy_oz0_layout(tmp_path: Path) -> None
     )
 
     _assert_tree_matches(source_root, restore_destination, files)
+
+
+def test_restore_artifacts_do_not_remain_in_live_root_and_are_not_reingested_by_backup(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restored_root = tmp_path / "restored_world"
+    data_root = tmp_path / "data_root"
+
+    files = [
+        _FileSpec(relative_path=Path("alpha.txt"), content=b"alpha\n"),
+        _FileSpec(relative_path=Path("nested") / "beta.bin", content=b"\x00\x01\x02\x03"),
+    ]
+    _write_source_tree(source_root, files)
+
+    first_clock = FixedClock(datetime.fromisoformat("2026-01-01T00:00:00+00:00"))
+    run_backup(
+        profile_name="end_to_end",
+        source=source_root,
+        dry_run=False,
+        data_root=data_root,
+        excluded_directory_names=None,
+        excluded_file_names=None,
+        use_default_excludes=True,
+        max_items=100,
+        write_plan=False,
+        plan_path=None,
+        overwrite_plan=False,
+        clock=first_clock,
+        execute=True,
+        force=True,
+        break_lock=True,
+    )
+
+    first_manifest = _find_single_backup_manifest(source_root.parent / "source.OZ0")
+
+    run_restore(
+        manifest_path=first_manifest,
+        destination_root=restored_root,
+        mode="overwrite",
+        verify="size",
+        dry_run=False,
+        data_root=data_root,
+        clock=None,
+    )
+
+    assert not (restored_root / ".wcbt_restore").exists()
+    runtime_artifacts_root = _runtime_artifacts_root(restored_root, "20260101_000000Z")
+    assert runtime_artifacts_root.exists()
+    assert (runtime_artifacts_root / "restore_summary.json").is_file()
+
+    residue_root = restored_root / ".wcbt_restore" / "restore-run"
+    residue_root.mkdir(parents=True, exist_ok=True)
+    (residue_root / "restore_summary.json").write_text("transient", encoding="utf-8")
+
+    second_clock = FixedClock(datetime.fromisoformat("2026-01-02T00:00:00+00:00"))
+    run_backup(
+        profile_name="end_to_end",
+        source=restored_root,
+        dry_run=False,
+        data_root=data_root,
+        excluded_directory_names=None,
+        excluded_file_names=None,
+        use_default_excludes=True,
+        max_items=100,
+        write_plan=False,
+        plan_path=None,
+        overwrite_plan=False,
+        clock=second_clock,
+        execute=True,
+        force=True,
+        break_lock=True,
+    )
+
+    second_manifest = _find_single_backup_manifest(restored_root.parent / "restored_world.OZ0")
+    payload = json.loads(second_manifest.read_text(encoding="utf-8"))
+    normalized_operation_paths = {
+        str(Path(operation["relative_path"]).as_posix()) for operation in payload["operations"]
+    }
+
+    assert "alpha.txt" in normalized_operation_paths
+    assert "nested/beta.bin" in normalized_operation_paths
+    assert all(".wcbt_restore" not in path for path in normalized_operation_paths)
 
 
 def test_standard_backup_manifest_defaults_backup_origin_to_normal(tmp_path: Path) -> None:

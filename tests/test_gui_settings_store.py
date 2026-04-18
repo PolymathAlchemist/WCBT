@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import cast
 
@@ -39,6 +40,38 @@ def test_gui_settings_round_trip_pre_restore_backup_compression(tmp_path: Path) 
     loaded = load_gui_settings(data_root=tmp_path)
 
     assert loaded.pre_restore_backup_compression == "tar.zst"
+
+
+def test_load_gui_settings_ignores_stale_pytest_data_root_from_default_settings_file(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    default_root = tmp_path / "live-appdata-root"
+    default_root.mkdir(parents=True)
+    settings_path = default_root / "gui_settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "data_root": str(tmp_path / "pytest-of-ianim" / "pytest-642" / "stale-data-root"),
+                "archives_root": str(tmp_path / "archives-root"),
+                "default_compression": "none",
+                "default_run_mode": "plan",
+                "restore_mode": "overwrite",
+                "restore_verify": "size",
+                "restore_dry_run": False,
+                "pre_restore_backup_compression": "zip",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("gui.settings_store.default_data_root", lambda: default_root)
+
+    loaded = load_gui_settings(data_root=None)
+
+    assert loaded.data_root is None
+    assert loaded.archives_root == tmp_path / "archives-root"
+    assert loaded.restore_mode == "overwrite"
+    assert loaded.restore_dry_run is False
 
 
 def test_settings_tab_saves_pre_restore_backup_compression(

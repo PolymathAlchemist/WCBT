@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,11 +11,12 @@ from typing import Any, Mapping
 
 from backup_engine.backup.service import BackupRunResult, run_backup
 from backup_engine.manifest_store import read_manifest_json, write_json_atomic
+from backup_engine.paths_and_safety import resolve_profile_paths
 from backup_engine.profile_store.sqlite_store import open_profile_store
 
 from .data_models import RestoreIntent
 from .errors import RestoreArtifactError, RestoreConflictError, RestoreManifestError
-from .execute import promote_stage_to_destination
+from .execute import plan_promotion, promote_stage_to_destination
 from .journal import Clock, RestoreExecutionJournal
 from .materialize import materialize_restore_candidates
 from .plan import build_restore_plan, parse_restore_mode, parse_restore_verification
@@ -24,6 +27,24 @@ __all__ = [
     "run_restore",
     "RestoreIntent",
 ]
+_LOGGER = logging.getLogger(__name__)
+
+
+def _trace_restore_service(label: str, **values: object) -> None:
+    """
+    Emit a temporary restore-engine runtime trace for live diagnosis.
+
+    Parameters
+    ----------
+    label:
+        Short trace label describing the current trace point.
+    **values:
+        Key/value pairs to render.
+    """
+    rendered_values = ", ".join(f"{key}={value!s}" for key, value in values.items())
+    message = f"[WCBT restore trace] {label}: {rendered_values}"
+    print(message)
+    _LOGGER.warning(message)
 
 
 def _build_extract_root(destination_root: Path, stamp: str) -> Path:
@@ -31,6 +52,54 @@ def _build_extract_root(destination_root: Path, stamp: str) -> Path:
     Build a temporary extraction root outside the destination tree.
     """
     return destination_root.with_name(f"{destination_root.name}.wcbt_restore_extract") / stamp
+
+
+def _root_exception(exc: BaseException) -> BaseException:
+    """
+    Return the deepest chained exception.
+
+    Parameters
+    ----------
+    exc:
+        Top-level exception raised by the restore flow.
+
+    Returns
+    -------
+    BaseException
+        Deepest chained exception when available, otherwise ``exc``.
+    """
+    current = exc
+    while current.__cause__ is not None:
+        current = current.__cause__
+    return current
+
+
+def _trace_exception_details(label: str, exc: BaseException) -> None:
+    """
+    Emit detailed exception trace fields for live restore diagnosis.
+
+    Parameters
+    ----------
+    label:
+        Short trace label for the failure site.
+    exc:
+        Exception raised by the restore flow.
+    """
+    root_exc = _root_exception(exc)
+    trace = traceback.extract_tb(root_exc.__traceback__)
+    last_frame = trace[-1] if trace else None
+    _trace_restore_service(
+        label,
+        exception_type=type(exc).__name__,
+        exception_message=str(exc),
+        root_exception_type=type(root_exc).__name__,
+        root_exception_message=str(root_exc),
+        winerror=getattr(root_exc, "winerror", None),
+        errno=getattr(root_exc, "errno", None),
+        function=last_frame.name if last_frame is not None else None,
+        file=last_frame.filename if last_frame is not None else None,
+        line=last_frame.lineno if last_frame is not None else None,
+    )
 
 
 def _build_stage_root(destination_root: Path, run_id: str) -> Path:
@@ -73,7 +142,7 @@ def _cleanup_restore_transient_directories(
     *,
     extracted_root: Path | None,
     stage_root: Path,
-) -> None:
+) -> dict[str, object]:
     """
     Best-effort cleanup for restore transient working directories after success.
 
@@ -90,13 +159,37 @@ def _cleanup_restore_transient_directories(
     working folders. Safety snapshots such as ``.wcbt_restore_previous_*`` are
     not touched here.
     """
+    extracted_root_removed = False
+    extracted_parent_removed = False
+    stage_run_root_removed = False
+    stage_parent_removed = False
+
     if extracted_root is not None:
+        extracted_root_existed = extracted_root.exists()
         shutil.rmtree(extracted_root, ignore_errors=True)
+        extracted_root_removed = extracted_root_existed and not extracted_root.exists()
+        extracted_parent = extracted_root.parent
+        extracted_parent_existed = extracted_parent.exists()
         _remove_empty_restore_parent(extracted_root.parent)
+        extracted_parent_removed = extracted_parent_existed and not extracted_parent.exists()
 
     stage_run_root = stage_root.parent
+    stage_run_root_existed = stage_run_root.exists()
     shutil.rmtree(stage_run_root, ignore_errors=True)
-    _remove_empty_restore_parent(stage_run_root.parent)
+    stage_run_root_removed = stage_run_root_existed and not stage_run_root.exists()
+    stage_parent = stage_run_root.parent
+    stage_parent_existed = stage_parent.exists()
+    _remove_empty_restore_parent(stage_parent)
+    stage_parent_removed = stage_parent_existed and not stage_parent.exists()
+    return {
+        "extracted_root": str(extracted_root) if extracted_root is not None else None,
+        "extracted_root_removed": extracted_root_removed,
+        "extracted_parent_removed": extracted_parent_removed,
+        "stage_run_root": str(stage_run_root),
+        "stage_run_root_removed": stage_run_root_removed,
+        "stage_parent": str(stage_parent),
+        "stage_parent_removed": stage_parent_removed,
+    }
 
 
 def _normalize_pre_restore_backup_compression_policy(compression_policy: str) -> str:
@@ -145,6 +238,37 @@ def _cleanup_promoted_previous_root(
     shutil.rmtree(previous_root, ignore_errors=True)
 
 
+def _cleanup_live_restore_artifacts(destination_root: Path, run_id: str) -> dict[str, object]:
+    """
+    Remove restore artifacts that were promoted into the live destination tree.
+
+    Parameters
+    ----------
+    destination_root:
+        Destination root for the restore.
+    run_id:
+        Restore run identifier.
+
+    Returns
+    -------
+    dict[str, object]
+        Trace-friendly cleanup details for the promoted artifact root.
+    """
+    promoted_artifacts_root = _promoted_restore_artifacts_root(destination_root, run_id)
+    promoted_artifacts_existed = promoted_artifacts_root.exists()
+    shutil.rmtree(promoted_artifacts_root, ignore_errors=True)
+    promoted_artifacts_removed = promoted_artifacts_existed and not promoted_artifacts_root.exists()
+    promoted_parent = promoted_artifacts_root.parent
+    promoted_parent_existed = promoted_parent.exists()
+    _remove_empty_restore_parent(promoted_artifacts_root.parent)
+    promoted_parent_removed = promoted_parent_existed and not promoted_parent.exists()
+    return {
+        "promoted_artifacts_root": str(promoted_artifacts_root),
+        "promoted_artifacts_removed": promoted_artifacts_removed,
+        "promoted_artifacts_parent_removed": promoted_parent_removed,
+    }
+
+
 def _resolve_manifest_input(
     *,
     manifest_input: Path,
@@ -191,6 +315,13 @@ def _resolve_manifest_input(
         stamp = clock.now().astimezone(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
         extract_root = _build_extract_root(destination_root, stamp)
         extract_archive(archive_path=manifest_path, destination_dir=extract_root)
+        _trace_restore_service(
+            "resolve_manifest_from_selected_archive",
+            selected_manifest_path=manifest_input,
+            selected_archive_path=manifest_path,
+            destination_root=destination_root,
+            extracted_root=extract_root,
+        )
 
         # Expect exactly one top-level directory (run_id)
         children = [c for c in extract_root.iterdir() if c.is_dir()]
@@ -220,6 +351,13 @@ def _resolve_manifest_input(
                     stamp = clock.now().astimezone(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
                     extract_root = _build_extract_root(destination_root, stamp)
                     extract_archive(archive_path=archive_path, destination_dir=extract_root)
+                    _trace_restore_service(
+                        "resolve_manifest_from_manifest_archive",
+                        selected_manifest_path=manifest_input,
+                        selected_archive_path=archive_path,
+                        destination_root=destination_root,
+                        extracted_root=extract_root,
+                    )
 
                     children = [c for c in extract_root.iterdir() if c.is_dir()]
                     if len(children) != 1:
@@ -249,7 +387,7 @@ def _resolve_manifest_input(
 
 def _restore_artifacts_root(destination_root: Path, run_id: str) -> Path:
     """
-    Return the root directory for restore artifacts.
+    Return the root directory for restore artifacts outside the live destination tree.
 
     Parameters
     ----------
@@ -263,12 +401,62 @@ def _restore_artifacts_root(destination_root: Path, run_id: str) -> Path:
     pathlib.Path
         Path to the restore artifacts root directory.
     """
+    return destination_root.with_name(f"{destination_root.name}.wcbt_restore") / run_id
+
+
+def _promoted_restore_artifacts_root(destination_root: Path, run_id: str) -> Path:
+    """
+    Return the restore artifacts path promoted inside the live destination tree.
+
+    Parameters
+    ----------
+    destination_root:
+        Destination root for the restore.
+    run_id:
+        Restore run identifier.
+
+    Returns
+    -------
+    pathlib.Path
+        Path where staged restore artifacts land immediately after promotion.
+    """
     return destination_root / ".wcbt_restore" / run_id
+
+
+def _finalize_restore_artifacts(destination_root: Path, run_id: str) -> Path:
+    """
+    Move promoted restore artifacts out of the live destination tree.
+
+    Parameters
+    ----------
+    destination_root:
+        Destination root for the restore.
+    run_id:
+        Restore run identifier.
+
+    Returns
+    -------
+    pathlib.Path
+        Final runtime artifacts root outside the live destination tree.
+    """
+    promoted_artifacts_root = _promoted_restore_artifacts_root(destination_root, run_id)
+    final_artifacts_root = _restore_artifacts_root(destination_root, run_id)
+
+    if not promoted_artifacts_root.exists():
+        return final_artifacts_root
+
+    if final_artifacts_root.exists():
+        shutil.rmtree(final_artifacts_root, ignore_errors=True)
+
+    final_artifacts_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(promoted_artifacts_root), str(final_artifacts_root))
+    _remove_empty_restore_parent(promoted_artifacts_root.parent)
+    return final_artifacts_root
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     """
-    Write a JSON artifact to disk using atomic replacement.
+    Write a restore-local JSON artifact directly to disk.
 
     Parameters
     ----------
@@ -281,10 +469,21 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     ------
     RestoreArtifactError
         If the artifact cannot be written.
+
+    Notes
+    -----
+    Restore artifacts are written under transient restore working directories.
+    On this Windows environment, replacing a temp file with ``os.replace()``
+    inside that tree fails with ``PermissionError``. Keep restore artifact
+    writing local and direct so restore execution can proceed without changing
+    the shared manifest-writing contract used elsewhere.
     """
     try:
-        write_json_atomic(path, payload)
-    except Exception as exc:  # noqa: BLE001
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True, ensure_ascii=False)
+            handle.write("\n")
+    except OSError as exc:
         raise RestoreArtifactError(f"Failed to write JSON artifact: {path}") from exc
 
 
@@ -513,6 +712,15 @@ def _run_pre_restore_backup(
     if not profile_name:
         profile_name = "default"
 
+    resolved_profile_paths = resolve_profile_paths(profile_name, data_root=data_root)
+    _trace_restore_service(
+        "pre_restore_backup_context",
+        destination_root=destination_root,
+        data_root=data_root,
+        profile_root=resolved_profile_paths.profile_root,
+        work_root=resolved_profile_paths.work_root,
+    )
+
     manifest_job_id = run_payload.get("job_id")
     job_id = str(manifest_job_id) if isinstance(manifest_job_id, str) and manifest_job_id else None
 
@@ -555,6 +763,23 @@ def _run_pre_restore_backup(
         job_id=resolved_job_id,
         job_name=resolved_job_name if resolved_job_name is not None else destination_root.name,
         clock=clock,
+    )
+    staging_dir_line = next(
+        (
+            line.strip()
+            for line in result.report_text.splitlines()
+            if line.strip().startswith("Staging dir :")
+        ),
+        None,
+    )
+    _trace_restore_service(
+        "pre_restore_backup_completed",
+        data_root=data_root,
+        profile_root=resolved_profile_paths.profile_root,
+        work_root=resolved_profile_paths.work_root,
+        staging_dir=staging_dir_line or "(not reported)",
+        archive_root=result.archive_root,
+        manifest_path=result.manifest_path,
     )
 
     journal.append(
@@ -680,7 +905,7 @@ def run_restore(
     ---------
     Artifacts are written under either:
 
-    - Dry-run: `{destination_root}/.wcbt_restore/{run_id}/`
+    - Dry-run: `{destination_root.name}.wcbt_restore/{run_id}/` beside the destination root
     - Non-dry-run: `{stage_root}/.wcbt_restore/{run_id}/` (so artifacts survive atomic promotion)
 
     The following artifacts may be written:
@@ -690,7 +915,16 @@ def run_restore(
     - `execution_journal.jsonl`
     - `restore_summary.json`
     """
-    _ = data_root
+    selected_manifest_path = manifest_path
+    _trace_restore_service(
+        "run_restore",
+        selected_manifest_path=selected_manifest_path,
+        destination_root=destination_root,
+        data_root=data_root,
+        mode=mode,
+        verify=verify,
+        dry_run=dry_run,
+    )
 
     clock_to_use = clock if clock is not None else SystemClock()
     effective_pre_restore_backup_compression = _normalize_pre_restore_backup_compression_policy(
@@ -701,6 +935,13 @@ def run_restore(
         manifest_input=manifest_path,
         destination_root=destination_root,
         clock=clock_to_use,
+    )
+    _trace_restore_service(
+        "resolved_restore_input",
+        selected_manifest_path=selected_manifest_path,
+        resolved_manifest_path=resolved_manifest_path,
+        extracted_root=extracted_root,
+        selected_archive_path=manifest_path if manifest_path.suffix.lower() == ".zip" else None,
     )
     run_payload = read_manifest_json(resolved_manifest_path)
     manifest_path = resolved_manifest_path
@@ -723,6 +964,17 @@ def run_restore(
     run_id = str(plan.run_id)
 
     stage_root = _build_stage_root(destination_root, run_id)
+    _trace_restore_service(
+        "restore_stage_context",
+        resolved_manifest_path=manifest_path,
+        archive_root=run_payload.get("archive_root"),
+        destination_root=destination_root,
+        restore_mode=mode,
+        verify_mode=verify,
+        extracted_root=extracted_root,
+        stage_root=stage_root,
+        destination_exists=destination_root.exists(),
+    )
 
     if dry_run:
         artifacts_root = _restore_artifacts_root(plan.destination_root, run_id)
@@ -777,9 +1029,6 @@ def run_restore(
     restore_plan_path = artifacts_root / "restore_plan.json"
     restore_candidates_path = artifacts_root / "restore_candidates.jsonl"
 
-    _write_json(restore_plan_path, plan_dict)
-    _write_jsonl(restore_candidates_path, [c.to_dict() for c in candidates])
-
     base_counts: dict[str, int] = {
         "planned": len(candidates),
         "conflicts": 0,
@@ -788,61 +1037,62 @@ def run_restore(
         "verified_files": 0,
     }
 
-    # Enforce add-only conflict policy (artifact-first, fail-fast)
-    if intent.mode.value == "add-only":
-        conflicting = [c for c in candidates if c.operation_type.value == "skip_existing"]
-
-        if conflicting:
-            conflicts_path = artifacts_root / "restore_conflicts.jsonl"
-
-            _write_jsonl(
-                conflicts_path,
-                [
-                    {
-                        "operation_index": c.operation_index,
-                        "relative_path": c.relative_path,
-                        "destination_path": str(c.destination_path),
-                        "reason": c.reason,
-                    }
-                    for c in conflicting
-                ],
-            )
-
-            journal.append(
-                "restore_conflicts_detected",
-                {
-                    "conflicts_count": len(conflicting),
-                    "conflicts_path": str(conflicts_path),
-                },
-            )
-
-            _write_restore_summary(
-                artifacts_root=artifacts_root,
-                run_id=run_id,
-                manifest_path=manifest_path,
-                destination_root=destination_root,
-                mode=mode,
-                verify=verify,
-                dry_run=dry_run,
-                result="conflict",
-                counts={**base_counts, "conflicts": len(conflicting)},
-            )
-
-            raise RestoreConflictError(
-                f"Restore conflicts detected in add-only mode: {len(conflicting)} file(s) already exist."
-            )
-
-    journal.append(
-        "restore_artifacts_written",
-        {
-            "restore_plan_path": str(restore_plan_path),
-            "restore_candidates_path": str(restore_candidates_path),
-        },
-    )
-
-    stage_root = _build_stage_root(destination_root, str(plan.run_id))
-
     try:
+        _write_json(restore_plan_path, plan_dict)
+        _write_jsonl(restore_candidates_path, [c.to_dict() for c in candidates])
+
+        # Enforce add-only conflict policy (artifact-first, fail-fast)
+        if intent.mode.value == "add-only":
+            conflicting = [c for c in candidates if c.operation_type.value == "skip_existing"]
+
+            if conflicting:
+                conflicts_path = artifacts_root / "restore_conflicts.jsonl"
+
+                _write_jsonl(
+                    conflicts_path,
+                    [
+                        {
+                            "operation_index": c.operation_index,
+                            "relative_path": c.relative_path,
+                            "destination_path": str(c.destination_path),
+                            "reason": c.reason,
+                        }
+                        for c in conflicting
+                    ],
+                )
+
+                journal.append(
+                    "restore_conflicts_detected",
+                    {
+                        "conflicts_count": len(conflicting),
+                        "conflicts_path": str(conflicts_path),
+                    },
+                )
+
+                _write_restore_summary(
+                    artifacts_root=artifacts_root,
+                    run_id=run_id,
+                    manifest_path=manifest_path,
+                    destination_root=destination_root,
+                    mode=mode,
+                    verify=verify,
+                    dry_run=dry_run,
+                    result="conflict",
+                    counts={**base_counts, "conflicts": len(conflicting)},
+                )
+
+                raise RestoreConflictError(
+                    f"Restore conflicts detected in add-only mode: {len(conflicting)} file(s) already exist."
+                )
+
+        journal.append(
+            "restore_artifacts_written",
+            {
+                "restore_plan_path": str(restore_plan_path),
+                "restore_candidates_path": str(restore_candidates_path),
+            },
+        )
+
         if not dry_run:
             _run_pre_restore_backup(
                 run_payload=run_payload,
@@ -851,6 +1101,14 @@ def run_restore(
                 clock=clock_to_use,
                 journal=journal,
                 compression_policy=effective_pre_restore_backup_compression,
+            )
+            _trace_restore_service(
+                "post_pre_restore_backup_transition",
+                extracted_root=extracted_root,
+                stage_root=stage_root,
+                candidates_count=len(candidates),
+                destination_root=destination_root,
+                destination_exists=destination_root.exists(),
             )
 
         stage_result = build_restore_stage(
@@ -878,6 +1136,14 @@ def run_restore(
                 "verified_files": verification_result.verified_files,
                 "staged_files": stage_result.staged_files,
             },
+        )
+        _trace_restore_service(
+            "restore_verify_completed",
+            stage_root=stage_root,
+            verification_mode=verification_result.verification_mode,
+            planned_files=verification_result.planned_files,
+            verified_files=verification_result.verified_files,
+            staged_files=stage_result.staged_files,
         )
 
         if dry_run:
@@ -944,6 +1210,24 @@ def run_restore(
             },
         )
 
+        promotion_plan = plan_promotion(
+            stage_root=stage_root,
+            target_root=destination_root,
+            run_id=str(plan.run_id),
+        )
+        _trace_restore_service(
+            "restore_promotion_context",
+            promotion_source_path=promotion_plan.stage_root,
+            promotion_destination_path=promotion_plan.target_root,
+            destination_exists=promotion_plan.target_root.exists(),
+            previous_root=promotion_plan.previous_root,
+            previous_root_exists=(
+                promotion_plan.previous_root.exists()
+                if promotion_plan.previous_root is not None
+                else False
+            ),
+        )
+
         promotion_result = promote_stage_to_destination(
             stage_root=stage_root,
             destination_root=destination_root,
@@ -955,12 +1239,13 @@ def run_restore(
             previous_root=promotion_result.previous_root,
             pre_restore_backup_compression=effective_pre_restore_backup_compression,
         )
-        _cleanup_restore_transient_directories(
+        cleanup_details = _cleanup_restore_transient_directories(
             extracted_root=extracted_root,
             stage_root=stage_root,
         )
+        _trace_restore_service("restore_success_cleanup", **cleanup_details)
 
-        final_artifacts_root = _restore_artifacts_root(destination_root, run_id)
+        final_artifacts_root = _finalize_restore_artifacts(destination_root, run_id)
         return RestoreRunResult(
             run_id=run_id,
             manifest_path=manifest_path,
@@ -973,8 +1258,9 @@ def run_restore(
             summary_path=final_artifacts_root / "restore_summary.json",
         )
 
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # Best-effort: record an error summary, then re-raise.
+        _trace_exception_details("restore_exception", exc)
         try:
             _write_restore_summary(
                 artifacts_root=artifacts_root,
@@ -989,4 +1275,15 @@ def run_restore(
             )
         except Exception:  # noqa: BLE001
             pass
+        live_artifact_cleanup = _cleanup_live_restore_artifacts(destination_root, run_id)
+        transient_cleanup = _cleanup_restore_transient_directories(
+            extracted_root=extracted_root,
+            stage_root=stage_root,
+        )
+        _trace_restore_service(
+            "restore_failure_cleanup",
+            cleanup_ran=True,
+            **live_artifact_cleanup,
+            **transient_cleanup,
+        )
         raise

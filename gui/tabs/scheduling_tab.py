@@ -7,7 +7,7 @@ backup triggers for existing jobs.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import Q_ARG, QMetaObject, QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -108,7 +108,7 @@ class SchedulingWorker(QObject):
             return
         self.schedule_loaded.emit(status)
 
-    @Slot(object)
+    @Slot("QVariant")
     def save_schedule(self, schedule_obj: object) -> None:
         """
         Save or replace a schedule for a job.
@@ -501,12 +501,20 @@ class SchedulingTab(QWidget):
             self.source_edit.setText("")
             self.compression_edit.setText("")
         self.status_label.setText("Loading schedule…")
-        QMetaObject.invokeMethod(
-            self._worker,
-            "load_schedule",
-            Qt.ConnectionType.QueuedConnection,
-            job_id,
-        )
+        try:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "load_schedule",
+                Qt.ConnectionType.QueuedConnection,
+                job_id,
+            )
+        except TypeError:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "load_schedule",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, job_id),
+            )
 
     def _save_schedule(self) -> None:
         """
@@ -567,12 +575,20 @@ class SchedulingTab(QWidget):
         )
 
         self.status_label.setText("Saving schedule…")
-        QMetaObject.invokeMethod(
-            self._worker,
-            "save_schedule",
-            Qt.ConnectionType.QueuedConnection,
-            schedule,
-        )
+        try:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "save_schedule",
+                Qt.ConnectionType.QueuedConnection,
+                schedule,
+            )
+        except TypeError:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "save_schedule",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG("QVariant", schedule),
+            )
 
     def _delete_schedule(self) -> None:
         """
@@ -591,12 +607,20 @@ class SchedulingTab(QWidget):
             return
 
         self.status_label.setText("Deleting schedule…")
-        QMetaObject.invokeMethod(
-            self._worker,
-            "delete_schedule",
-            Qt.ConnectionType.QueuedConnection,
-            job_id,
-        )
+        try:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "delete_schedule",
+                Qt.ConnectionType.QueuedConnection,
+                job_id,
+            )
+        except TypeError:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "delete_schedule",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, job_id),
+            )
 
     def _run_schedule_now(self) -> None:
         """
@@ -607,12 +631,20 @@ class SchedulingTab(QWidget):
             return
 
         self.status_label.setText("Starting scheduled task…")
-        QMetaObject.invokeMethod(
-            self._worker,
-            "run_schedule_now",
-            Qt.ConnectionType.QueuedConnection,
-            job_id,
-        )
+        try:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "run_schedule_now",
+                Qt.ConnectionType.QueuedConnection,
+                job_id,
+            )
+        except TypeError:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "run_schedule_now",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, job_id),
+            )
 
     def _enable_schedule(self) -> None:
         """
@@ -640,13 +672,22 @@ class SchedulingTab(QWidget):
             return
 
         self.status_label.setText("Updating task state…")
-        QMetaObject.invokeMethod(
-            self._worker,
-            "set_schedule_enabled",
-            Qt.ConnectionType.QueuedConnection,
-            job_id,
-            enabled,
-        )
+        try:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "set_schedule_enabled",
+                Qt.ConnectionType.QueuedConnection,
+                job_id,
+                enabled,
+            )
+        except TypeError:
+            QMetaObject.invokeMethod(
+                self._worker,
+                "set_schedule_enabled",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, job_id),
+                Q_ARG(bool, enabled),
+            )
 
     def _task_query_command(self, job_id: str) -> str:
         """

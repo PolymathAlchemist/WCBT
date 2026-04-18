@@ -154,6 +154,8 @@ class SettingsTab(QWidget):
             restore_verify=current_settings.restore_verify,
             restore_dry_run=current_settings.restore_dry_run,
             pre_restore_backup_compression=str(self.pre_restore_compression_combo.currentData()),
+            restore_history_root_override=current_settings.restore_history_root_override,
+            restore_destination_root=current_settings.restore_destination_root,
         )
 
         try:
